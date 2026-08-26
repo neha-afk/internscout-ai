@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AuthNav from "@/components/AuthNav";
 import type {
@@ -58,6 +58,21 @@ function freshnessLabel(timestamp: string | null): string | null {
   return ageInDays <= 3 ? "Fresh" : `Last verified ${ageInDays} days ago`;
 }
 
+function freshnessCategory(timestamp: string | null): "fresh" | "stale" | null {
+  if (!timestamp) return null;
+  const parsedTimestamp = Date.parse(timestamp);
+  if (!Number.isFinite(parsedTimestamp)) return null;
+  return Date.now() - parsedTimestamp <= 3 * 24 * 60 * 60 * 1000
+    ? "fresh"
+    : "stale";
+}
+
+function timestampValue(timestamp: string | null): number {
+  if (!timestamp) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
 export default function Home() {
   const [role, setRole] = useState("");
   const [skills, setSkills] = useState("");
@@ -81,7 +96,41 @@ export default function Home() {
   const [savedUrls, setSavedUrls] = useState<Set<string>>(new Set());
   const [savingUrl, setSavingUrl] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState("");
+  const [sortOption, setSortOption] = useState("best");
+  const [modeFilter, setModeFilter] = useState("all");
+  const [minimumScoreFilter, setMinimumScoreFilter] = useState("all");
+  const [freshnessFilter, setFreshnessFilter] = useState("all");
+  const [verificationFilter, setVerificationFilter] = useState("all");
   const touchedPreferenceFields = useRef(new Set<string>());
+
+  const availableWorkModes = useMemo(
+    () =>
+      [...new Set((internships ?? []).map((item) => item.internship.workMode).filter((mode): mode is "remote" | "hybrid" | "onsite" => mode !== null))],
+    [internships]
+  );
+  const displayedInternships = useMemo(() => {
+    const minimumScore = minimumScoreFilter === "all" ? 0 : Number(minimumScoreFilter);
+    return [...(internships ?? [])]
+      .filter((item) => modeFilter === "all" || item.internship.workMode === modeFilter)
+      .filter((item) => item.match.score >= minimumScore)
+      .filter((item) => freshnessFilter === "all" || freshnessCategory(item.internship.lastVerifiedAt) === freshnessFilter)
+      .filter((item) => verificationFilter === "all" || item.verification.status === verificationFilter)
+      .sort((left, right) => {
+        if (sortOption === "newest") {
+          return timestampValue(right.internship.lastVerifiedAt || right.internship.createdAt) - timestampValue(left.internship.lastVerifiedAt || left.internship.createdAt);
+        }
+        if (sortOption === "verification") return (right.verification.score ?? -1) - (left.verification.score ?? -1);
+        return right.match.score - left.match.score;
+      });
+  }, [freshnessFilter, internships, minimumScoreFilter, modeFilter, sortOption, verificationFilter]);
+
+  function resetResultFilters() {
+    setSortOption("best");
+    setModeFilter("all");
+    setMinimumScoreFilter("all");
+    setFreshnessFilter("all");
+    setVerificationFilter("all");
+  }
 
   function markPreferenceField(field: string): void {
     touchedPreferenceFields.current.add(field);
@@ -291,6 +340,9 @@ export default function Home() {
         <div className="flex items-center gap-4">
           <a href="/tracker" className="text-sm text-slate-300 hover:text-white">
             Tracker
+          </a>
+          <a href="/dashboard" className="text-sm text-slate-300 hover:text-white">
+            Dashboard
           </a>
           <a href="/preferences" className="text-sm text-slate-300 hover:text-white">
             Preferences
@@ -528,20 +580,65 @@ export default function Home() {
             <>
               {internships.length > 0 && (
                 <>
+                  <div className="mb-6 rounded-2xl border border-slate-800 bg-slate-900 p-4">
+                    <div className="grid gap-3 md:grid-cols-5">
+                      <label className="text-xs text-slate-400">Sort
+                        <select value={sortOption} onChange={(event) => setSortOption(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm text-white">
+                          <option value="best">Best Match</option>
+                          <option value="newest">Newest</option>
+                          <option value="verification">Highest Verification</option>
+                        </select>
+                      </label>
+                      <label className="text-xs text-slate-400">Work mode
+                        <select value={modeFilter} onChange={(event) => setModeFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm text-white">
+                          <option value="all">All</option>
+                          {availableWorkModes.map((mode) => <option key={mode} value={mode}>{mode === "onsite" ? "On-site" : mode.charAt(0).toUpperCase() + mode.slice(1)}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs text-slate-400">Minimum match
+                        <select value={minimumScoreFilter} onChange={(event) => setMinimumScoreFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm text-white">
+                          <option value="all">All</option><option value="50">50+</option><option value="60">60+</option><option value="70">70+</option><option value="80">80+</option><option value="90">90+</option>
+                        </select>
+                      </label>
+                      <label className="text-xs text-slate-400">Freshness
+                        <select value={freshnessFilter} onChange={(event) => setFreshnessFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm text-white">
+                          <option value="all">All</option><option value="fresh">Fresh</option><option value="stale">Stale</option>
+                        </select>
+                      </label>
+                      <label className="text-xs text-slate-400">Verification
+                        <select value={verificationFilter} onChange={(event) => setVerificationFilter(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 p-2 text-sm text-white">
+                          <option value="all">All</option><option value="verified">Verified</option><option value="needs_review">Needs Review</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-400">
+                      <span>Showing {displayedInternships.length} of {internships.length} analyzed opportunities</span>
+                      <button type="button" onClick={resetResultFilters} className="text-blue-300 hover:text-blue-200">Reset Filters</button>
+                    </div>
+                  </div>
                   <div className="mb-5 flex items-center justify-between">
                     <h3 className="text-2xl font-semibold">
-                      {internships.length} matching internship
-                      {internships.length === 1 ? "" : "s"}
+                      {displayedInternships.length} matching internship
+                      {displayedInternships.length === 1 ? "" : "s"}
                     </h3>
                   </div>
 
-                  <div className="space-y-5">
-                    {internships.map((item, index) => {
+                  {displayedInternships.length === 0 ? (
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center text-slate-300">
+                      <p>No opportunities match these filters.</p>
+                      <button type="button" onClick={resetResultFilters} className="mt-3 text-blue-300 hover:text-blue-200">Reset Filters</button>
+                    </div>
+                  ) : <div className="space-y-5">
+                    {displayedInternships.map((item, index) => {
                   const internship = item.internship;
                   const applyUrl =
                     internship.applicationUrl || internship.sourceUrl;
                   const requiredSkills = internship.requiredSkills ?? [];
                   const freshness = freshnessLabel(internship.lastVerifiedAt);
+                  const whyReasons = [
+                    ...item.match.reasons,
+                    ...item.eligibility.reasons,
+                  ].filter((reason, reasonIndex, reasons) => reasons.indexOf(reason) === reasonIndex).slice(0, 5);
 
                   return (
                     <article
@@ -659,6 +756,15 @@ export default function Home() {
                         </div>
                       </div>
 
+                      {whyReasons.length > 0 && (
+                        <details className="mt-5 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                          <summary className="cursor-pointer text-sm font-semibold text-slate-200">Why this matches you</summary>
+                          <ul className="mt-2 space-y-1 text-sm text-slate-400">
+                            {whyReasons.map((reason) => <li key={reason}>• {reason}</li>)}
+                          </ul>
+                        </details>
+                      )}
+
                       <div className="mt-6 flex flex-wrap justify-end gap-3">
                         <button
                           type="button"
@@ -704,7 +810,7 @@ export default function Home() {
                     </article>
                   );
                     })}
-                  </div>
+                  </div>}
                 </>
               )}
 

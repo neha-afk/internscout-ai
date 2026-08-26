@@ -103,6 +103,7 @@ export default function TrackerPage() {
             <h1 className="mt-1 text-3xl font-bold">Application Tracker</h1>
           </div>
           <nav className="flex gap-4 text-sm text-slate-300">
+            <a href="/dashboard" className="hover:text-white">Dashboard</a>
             <a href="/" className="hover:text-white">Home</a>
             <a href="/preferences" className="hover:text-white">Preferences</a>
             <a href="/alerts" className="hover:text-white">Alerts</a>

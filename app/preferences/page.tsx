@@ -134,6 +134,7 @@ export default function PreferencesPage() {
             <h1 className="mt-1 text-3xl font-bold">Search Preferences</h1>
           </div>
           <nav className="flex gap-4 text-sm text-slate-300">
+            <a href="/dashboard" className="hover:text-white">Dashboard</a>
             <a href="/" className="hover:text-white">Home</a>
             <a href="/tracker" className="hover:text-white">Tracker</a>
             <a href="/alerts" className="hover:text-white">Alerts</a>
