@@ -1,6 +1,18 @@
 import { createClient } from "@supabase/supabase-js";
 import type { InternshipInsert, SearchFilters, WorkMode } from "@/types/internship";
 
+export const FRESH_DAYS = 3;
+export const STALE_DAYS = 14;
+export const EXPIRED_DAYS = 30;
+const DAYS_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
+
+export type InternshipFreshnessStatus = "fresh" | "stale" | "expired";
+
+export interface InternshipFreshness {
+  status: InternshipFreshnessStatus;
+  ageInDays: number;
+}
+
 export interface CachedInternshipRow {
   id: string;
   company: string | null;
@@ -31,7 +43,29 @@ export interface CachedInternshipRow {
   created_at: string;
 }
 
-function createPersistenceClient() {
+export function getInternshipFreshness(internship: {
+  last_verified_at: string | null;
+  created_at: string;
+}): InternshipFreshness {
+  const timestamp = internship.last_verified_at ?? internship.created_at;
+  const parsedTimestamp = Date.parse(timestamp);
+  const ageInDays = Number.isFinite(parsedTimestamp)
+    ? Math.max(
+        0,
+        Math.floor((Date.now() - parsedTimestamp) / DAYS_IN_MILLISECONDS)
+      )
+    : Number.POSITIVE_INFINITY;
+
+  if (ageInDays <= FRESH_DAYS) {
+    return { status: "fresh", ageInDays };
+  }
+  if (ageInDays <= STALE_DAYS || ageInDays <= EXPIRED_DAYS) {
+    return { status: "stale", ageInDays };
+  }
+  return { status: "expired", ageInDays };
+}
+
+export function createPersistenceClient() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -103,6 +137,21 @@ export async function getInternshipBySourceUrl(sourceUrl: string) {
   return data;
 }
 
+export async function getExistingSourceUrls(sourceUrls: string[]): Promise<Set<string>> {
+  if (sourceUrls.length === 0) return new Set();
+  const supabase = createPersistenceClient();
+  const { data, error } = await supabase
+    .from("internships")
+    .select("source_url")
+    .in("source_url", sourceUrls);
+  if (error) throw new Error(`Unable to check internship URLs: ${error.message}`);
+  return new Set(
+    (data ?? [])
+      .map((row) => row.source_url)
+      .filter((sourceUrl): sourceUrl is string => typeof sourceUrl === "string")
+  );
+}
+
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
@@ -145,7 +194,42 @@ export async function getCachedInternships(
 
   const rows = (data ?? []) as CachedInternshipRow[];
   const requestedLocation = filters.location?.trim();
+  const freshRows = rows.filter(
+    (row) => getInternshipFreshness(row).status === "fresh"
+  );
   return requestedLocation
-    ? rows.filter((row) => matchesLocation(row, requestedLocation))
-    : rows;
+    ? freshRows.filter((row) => matchesLocation(row, requestedLocation))
+    : freshRows;
+}
+
+// Intended for a future scheduled server-side maintenance job or cron task.
+export async function expireStaleInternships(): Promise<number> {
+  const supabase = createPersistenceClient();
+  const { data, error } = await supabase
+    .from("internships")
+    .select("id, last_verified_at, created_at")
+    .eq("status", "active");
+
+  if (error) {
+    throw new Error(`Unable to find expired internships: ${error.message}`);
+  }
+
+  const expiredIds = (data ?? [])
+    .filter((internship) => getInternshipFreshness(internship).status === "expired")
+    .map((internship) => internship.id);
+
+  if (expiredIds.length === 0) {
+    return 0;
+  }
+
+  const { error: updateError } = await supabase
+    .from("internships")
+    .update({ status: "expired" })
+    .in("id", expiredIds);
+
+  if (updateError) {
+    throw new Error(`Unable to expire internships: ${updateError.message}`);
+  }
+
+  return expiredIds.length;
 }

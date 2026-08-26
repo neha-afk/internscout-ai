@@ -24,6 +24,63 @@ export type ApplicationStatus =
   | "offer"
   | "rejected";
 
+export type ExperienceLevel =
+  | "fresher"
+  | "beginner"
+  | "intermediate"
+  | "experienced";
+
+export type PreferredWorkMode = WorkMode;
+
+export interface UserPreferences {
+  id?: string;
+  user_id?: string;
+  preferred_roles: string[];
+  preferred_work_modes: PreferredWorkMode[];
+  preferred_locations: string[];
+  skills: string[];
+  graduation_year: number | null;
+  experience_level: ExperienceLevel | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface JobAlert {
+  id: string;
+  user_id: string;
+  name: string;
+  roles: string[];
+  work_modes: PreferredWorkMode[];
+  locations: string[];
+  skills: string[];
+  minimum_match_score: number | null;
+  is_active: boolean;
+  last_checked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobAlertMatch {
+  id: string;
+  alert_id: string;
+  internship_source_url: string;
+  match_score: number;
+  matched_reasons: string[];
+  detected_at: string;
+  created_at: string;
+}
+
+export interface JobAlertMatchResult {
+  id: string;
+  alert_id: string;
+  internship_source_url: string;
+  match_score: number;
+  matched_reasons: string[];
+  detected_at: string;
+  alert_name: string;
+  internship: Internship;
+}
+
 export interface UserInternship {
   id: string;
   user_id: string;
@@ -57,6 +114,8 @@ export interface Internship {
   status: InternshipStatus;
   lastVerifiedAt: string | null;
   createdAt: string;
+  verificationStatus?: VerificationStatus | null;
+  verificationScore?: number | null;
 }
 
 export type EligibilityStatus =

@@ -101,9 +101,12 @@ export default function TrackerPage() {
             <p className="text-sm font-medium text-blue-400">InternScout AI</p>
             <h1 className="mt-1 text-3xl font-bold">Application Tracker</h1>
           </div>
-          <a href="/" className="text-sm text-slate-300 hover:text-white">
-            Back to search
-          </a>
+          <nav className="flex gap-4 text-sm text-slate-300">
+            <a href="/" className="hover:text-white">Home</a>
+            <a href="/preferences" className="hover:text-white">Preferences</a>
+            <a href="/alerts" className="hover:text-white">Alerts</a>
+            <a href="/alerts/matches" className="hover:text-white">Matches</a>
+          </nav>
         </div>
 
         {error && <p className="mb-5 text-sm text-red-400">{error}</p>}

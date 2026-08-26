@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type {
   InternshipResult,
+  ExperienceLevel,
   SearchApiResponse,
   SearchFilters,
   SearchOpportunity,
@@ -45,6 +46,17 @@ function opportunityDomain(url: string): string {
   }
 }
 
+function freshnessLabel(timestamp: string | null): string | null {
+  if (!timestamp) return null;
+  const parsedTimestamp = Date.parse(timestamp);
+  if (!Number.isFinite(parsedTimestamp)) return null;
+  const ageInDays = Math.max(
+    0,
+    Math.floor((Date.now() - parsedTimestamp) / (24 * 60 * 60 * 1000))
+  );
+  return ageInDays <= 3 ? "Fresh" : `Last verified ${ageInDays} days ago`;
+}
+
 export default function Home() {
   const [role, setRole] = useState("");
   const [skills, setSkills] = useState("");
@@ -68,6 +80,66 @@ export default function Home() {
   const [savedUrls, setSavedUrls] = useState<Set<string>>(new Set());
   const [savingUrl, setSavingUrl] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState("");
+  const touchedPreferenceFields = useRef(new Set<string>());
+
+  function markPreferenceField(field: string): void {
+    touchedPreferenceFields.current.add(field);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPreferences() {
+      const supabase = createClient();
+      const { data: authData } = await supabase.auth.getUser();
+      if (cancelled || !authData.user) return;
+
+      const { data } = await supabase
+        .from("user_preferences")
+        .select("*")
+        .eq("user_id", authData.user.id)
+        .maybeSingle();
+      if (cancelled || !data) return;
+
+      if (!touchedPreferenceFields.current.has("role")) {
+        setRole(data.preferred_roles?.[0] ?? "");
+      }
+      if (!touchedPreferenceFields.current.has("location")) {
+        setLocation(data.preferred_locations?.[0] ?? "");
+      }
+      if (!touchedPreferenceFields.current.has("skills")) {
+        setSkills(Array.isArray(data.skills) ? data.skills.join(", ") : "");
+      }
+      if (!touchedPreferenceFields.current.has("workMode")) {
+        setWorkMode(data.preferred_work_modes?.[0] ?? "");
+      }
+      if (!touchedPreferenceFields.current.has("graduationYear")) {
+        setGraduationYear(
+          data.graduation_year === null || data.graduation_year === undefined
+            ? ""
+            : String(data.graduation_year)
+        );
+      }
+      if (!touchedPreferenceFields.current.has("experience")) {
+        const experienceMap: Record<ExperienceLevel, string> = {
+          fresher: "0",
+          beginner: "0-1",
+          intermediate: "1-2",
+          experienced: "2+",
+        };
+        setExperience(
+          data.experience_level
+            ? experienceMap[data.experience_level as ExperienceLevel] ?? ""
+            : ""
+        );
+      }
+    }
+
+    void loadPreferences();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function saveInternship(input: {
     sourceUrl: string;
@@ -219,6 +291,15 @@ export default function Home() {
           <a href="/tracker" className="text-sm text-slate-300 hover:text-white">
             Tracker
           </a>
+          <a href="/preferences" className="text-sm text-slate-300 hover:text-white">
+            Preferences
+          </a>
+          <a href="/alerts" className="text-sm text-slate-300 hover:text-white">
+            Job Alerts
+          </a>
+          <a href="/alerts/matches" className="text-sm text-slate-300 hover:text-white">
+            Alert Matches
+          </a>
           <button className="rounded-lg bg-slate-800 px-4 py-2 text-sm hover:bg-slate-700">
             Sign In
           </button>
@@ -253,7 +334,10 @@ export default function Home() {
               <select
                 id="role"
                 value={role}
-                onChange={(e) => setRole(e.target.value)}
+                onChange={(e) => {
+                  markPreferenceField("role");
+                  setRole(e.target.value);
+                }}
                 aria-invalid={Boolean(errors.role)}
                 aria-describedby={errors.role ? "role-error" : undefined}
                 className="w-full rounded-lg border border-slate-700 bg-slate-800 p-3 outline-none"
@@ -285,7 +369,10 @@ export default function Home() {
               type="text"
               placeholder="Location (e.g. Bengaluru, India)"
               value={location}
-              onChange={(e) => setLocation(e.target.value)}
+              onChange={(e) => {
+                markPreferenceField("location");
+                setLocation(e.target.value);
+              }}
               className="rounded-lg border border-slate-700 bg-slate-800 p-3 outline-none"
             />
 
@@ -293,13 +380,19 @@ export default function Home() {
               type="text"
               placeholder="Skills (e.g. React, Python, Machine Learning)"
               value={skills}
-              onChange={(e) => setSkills(e.target.value)}
+              onChange={(e) => {
+                markPreferenceField("skills");
+                setSkills(e.target.value);
+              }}
               className="rounded-lg border border-slate-700 bg-slate-800 p-3 outline-none"
             />
 
             <select
               value={workMode}
-              onChange={(e) => setWorkMode(e.target.value)}
+              onChange={(e) => {
+                markPreferenceField("workMode");
+                setWorkMode(e.target.value);
+              }}
               className="rounded-lg border border-slate-700 bg-slate-800 p-3 outline-none"
             >
               <option value="">Work mode</option>
@@ -315,7 +408,10 @@ export default function Home() {
               <select
                 id="graduation-year"
                 value={graduationYear}
-                onChange={(e) => setGraduationYear(e.target.value)}
+                onChange={(e) => {
+                  markPreferenceField("graduationYear");
+                  setGraduationYear(e.target.value);
+                }}
                 aria-invalid={Boolean(errors.graduationYear)}
                 aria-describedby={
                   errors.graduationYear ? "graduation-year-error" : undefined
@@ -340,7 +436,10 @@ export default function Home() {
 
             <select
               value={experience}
-              onChange={(e) => setExperience(e.target.value)}
+              onChange={(e) => {
+                markPreferenceField("experience");
+                setExperience(e.target.value);
+              }}
               className="rounded-lg border border-slate-700 bg-slate-800 p-3 outline-none"
             >
               <option value="">Experience</option>
@@ -443,6 +542,7 @@ export default function Home() {
                   const applyUrl =
                     internship.applicationUrl || internship.sourceUrl;
                   const requiredSkills = internship.requiredSkills ?? [];
+                  const freshness = freshnessLabel(internship.lastVerifiedAt);
 
                   return (
                     <article
@@ -513,6 +613,12 @@ export default function Home() {
                             </span>
                           )}
                         </div>
+                      )}
+
+                      {freshness && (
+                        <p className="mt-4 text-xs text-emerald-300">
+                          {freshness}
+                        </p>
                       )}
 
                       <div className="mt-5 grid gap-4 border-t border-slate-800 pt-5 md:grid-cols-2">
