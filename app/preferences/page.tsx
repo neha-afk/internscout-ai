@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import SearchableMultiSelect from "@/components/SearchableMultiSelect";
+import AuthNav from "@/components/AuthNav";
 import type {
   ExperienceLevel,
   PreferredWorkMode,
@@ -138,6 +139,7 @@ export default function PreferencesPage() {
             <a href="/alerts" className="hover:text-white">Alerts</a>
             <a href="/alerts/matches" className="hover:text-white">Matches</a>
           </nav>
+          <AuthNav />
         </div>
 
         {error && <p className="mb-4 text-sm text-red-400">{error}</p>}

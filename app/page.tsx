@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import AuthNav from "@/components/AuthNav";
 import type {
   InternshipResult,
   ExperienceLevel,
@@ -300,9 +301,7 @@ export default function Home() {
           <a href="/alerts/matches" className="text-sm text-slate-300 hover:text-white">
             Alert Matches
           </a>
-          <button className="rounded-lg bg-slate-800 px-4 py-2 text-sm hover:bg-slate-700">
-            Sign In
-          </button>
+          <AuthNav />
         </div>
       </nav>
 

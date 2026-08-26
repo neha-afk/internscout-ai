@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import type { ApplicationStatus, UserInternship } from "@/types/internship";
+import AuthNav from "@/components/AuthNav";
 
 const statuses: ApplicationStatus[] = [
   "saved",
@@ -107,6 +108,7 @@ export default function TrackerPage() {
             <a href="/alerts" className="hover:text-white">Alerts</a>
             <a href="/alerts/matches" className="hover:text-white">Matches</a>
           </nav>
+          <AuthNav />
         </div>
 
         {error && <p className="mb-5 text-sm text-red-400">{error}</p>}
