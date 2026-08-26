@@ -137,6 +137,7 @@ export default function PreferencesPage() {
             <a href="/dashboard" className="hover:text-white">Dashboard</a>
             <a href="/" className="hover:text-white">Home</a>
             <a href="/tracker" className="hover:text-white">Tracker</a>
+            <a href="/recommendations" className="hover:text-white">Recommendations</a>
             <a href="/alerts" className="hover:text-white">Alerts</a>
             <a href="/alerts/matches" className="hover:text-white">Matches</a>
           </nav>

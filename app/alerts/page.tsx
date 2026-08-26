@@ -152,7 +152,7 @@ export default function AlertsPage() {
       <div className="mx-auto max-w-5xl">
         <header className="mb-8 flex items-center justify-between">
           <div><p className="text-sm font-medium text-blue-400">InternScout AI</p><h1 className="mt-1 text-3xl font-bold">Job Alerts</h1></div>
-          <div className="flex items-center gap-4"><nav className="flex gap-4 text-sm text-slate-300"><a href="/dashboard" className="hover:text-white">Dashboard</a><a href="/" className="hover:text-white">Home</a><a href="/tracker" className="hover:text-white">Tracker</a><a href="/preferences" className="hover:text-white">Preferences</a><a href="/alerts/matches" className="hover:text-white">Alert Matches</a></nav><AuthNav /></div>
+          <div className="flex items-center gap-4"><nav className="flex gap-4 text-sm text-slate-300"><a href="/dashboard" className="hover:text-white">Dashboard</a><a href="/" className="hover:text-white">Home</a><a href="/tracker" className="hover:text-white">Tracker</a><a href="/preferences" className="hover:text-white">Preferences</a><a href="/recommendations" className="hover:text-white">Recommendations</a><a href="/alerts/matches" className="hover:text-white">Alert Matches</a></nav><AuthNav /></div>
         </header>
         {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
         {message && <p className="mb-4 text-sm text-green-400">{message}</p>}

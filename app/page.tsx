@@ -17,6 +17,53 @@ type FormErrors = {
   minStipend?: string;
 };
 
+const SEARCH_RESULTS_STORAGE_KEY = "internscout:latest-search-results";
+
+function isStoredSearchPayload(value: unknown): value is {
+  message?: string;
+  verificationResults: InternshipResult[];
+  results?: SearchOpportunity[];
+} {
+  if (!value || typeof value !== "object") return false;
+  const payload = value as Record<string, unknown>;
+  if (!Array.isArray(payload.verificationResults)) return false;
+  return payload.verificationResults.every((result) => {
+    if (!result || typeof result !== "object") return false;
+    const item = result as Record<string, unknown>;
+    return (
+      item.internship &&
+      typeof item.internship === "object" &&
+      item.eligibility &&
+      typeof item.eligibility === "object" &&
+      item.match &&
+      typeof item.match === "object" &&
+      item.verification &&
+      typeof item.verification === "object"
+    );
+  });
+}
+
+function normalizeInternshipResult(result: InternshipResult): InternshipResult {
+  const topLevel = result as InternshipResult & {
+    id?: string | null;
+    internshipId?: string | null;
+  };
+  const resolvedInternshipId =
+    result.internship.internshipId ??
+    result.internship.id ??
+    topLevel.internshipId ??
+    topLevel.id ??
+    null;
+  return {
+    ...result,
+    internship: {
+      ...result.internship,
+      id: resolvedInternshipId ?? "",
+      internshipId: resolvedInternshipId ?? "",
+    },
+  };
+}
+
 function readableEligibility(
   status: InternshipResult["eligibility"]["status"]
 ): string {
@@ -137,6 +184,121 @@ export default function Home() {
   }
 
   useEffect(() => {
+    const stored = window.localStorage.getItem("internscout:search-filters");
+    if (!stored) return;
+    try {
+      const filters = JSON.parse(stored) as Partial<SearchFilters>;
+      if (typeof filters.role !== "string" || typeof filters.graduationYear !== "number" || typeof filters.postedWithinDays !== "number" || typeof filters.paidOnly !== "boolean") return;
+      setRole(filters.role);
+      setGraduationYear(String(filters.graduationYear));
+      setPostedWithin(String(filters.postedWithinDays));
+      setPaidOnly(filters.paidOnly);
+      setSkills(Array.isArray(filters.skills) ? filters.skills.join(", ") : "");
+      setLocation(filters.location ?? "");
+      setWorkMode(filters.workMode ?? "");
+      setExperience(filters.experience ?? "");
+      setMinStipend(filters.minStipend === undefined ? "" : String(filters.minStipend));
+      ["role", "graduationYear", "skills", "location", "workMode", "experience"].forEach((field) => touchedPreferenceFields.current.add(field));
+      window.localStorage.removeItem("internscout:search-filters");
+    } catch {
+      window.localStorage.removeItem("internscout:search-filters");
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreResults() {
+      const stored = window.sessionStorage.getItem(SEARCH_RESULTS_STORAGE_KEY);
+      if (!stored) return;
+
+      try {
+        const parsed: unknown = JSON.parse(stored);
+        if (!isStoredSearchPayload(parsed)) {
+          window.sessionStorage.removeItem(SEARCH_RESULTS_STORAGE_KEY);
+          return;
+        }
+
+        const normalizedResults = parsed.verificationResults.map(normalizeInternshipResult);
+        const missingResults = normalizedResults
+          .filter((result) => !result.internship.internshipId && result.internship.sourceUrl)
+          .map((result) => result.internship);
+        let repairedIds = new Map<string, string>();
+        if (missingResults.length > 0) {
+          try {
+            const response = await fetch("/api/internships/lookup", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ internships: missingResults }),
+            });
+            if (response.ok) {
+              const data = (await response.json()) as {
+                internships?: Array<{ sourceUrl?: unknown; internshipId?: unknown }>;
+              };
+              repairedIds = new Map(
+                (data.internships ?? [])
+                  .filter(
+                    (item): item is { sourceUrl: string; internshipId: string; error?: string | null } =>
+                      typeof item.sourceUrl === "string" &&
+                      typeof item.internshipId === "string" &&
+                      item.internshipId.length > 0
+                  )
+                  .map((item) => [item.sourceUrl, item.internshipId])
+              );
+            }
+          } catch {
+            // Keep results visible when the optional repair lookup is unavailable.
+          }
+        }
+        const repairedResults = normalizedResults.map((result) => {
+          const sourceUrl = result.internship.sourceUrl;
+          const repairedId = sourceUrl ? repairedIds.get(sourceUrl) : undefined;
+          return repairedId
+            ? { ...result, internship: { ...result.internship, id: repairedId, internshipId: repairedId } }
+            : result;
+        });
+        const normalizedResultsWithIds = repairedResults;
+        if (cancelled) return;
+
+        const analyzedUrls = new Set(
+          normalizedResultsWithIds
+            .map((item) => item.internship.sourceUrl)
+            .filter((url): url is string => Boolean(url))
+        );
+        const seenUrls = new Set<string>();
+        const remainingOpportunities = (parsed.results ?? []).filter((result) => {
+          if (analyzedUrls.has(result.url) || seenUrls.has(result.url)) return false;
+          seenUrls.add(result.url);
+          return true;
+        });
+
+        setInternships(normalizedResultsWithIds);
+        setMoreOpportunities(remainingOpportunities);
+        if (parsed.message) setSearchMessage(parsed.message);
+        try {
+          window.sessionStorage.setItem(
+            SEARCH_RESULTS_STORAGE_KEY,
+            JSON.stringify({
+              message: parsed.message,
+              verificationResults: normalizedResultsWithIds,
+              results: parsed.results ?? [],
+            })
+          );
+        } catch {
+          // Keep repaired results in React state if storage is unavailable.
+        }
+      } catch {
+        window.sessionStorage.removeItem(SEARCH_RESULTS_STORAGE_KEY);
+      }
+    }
+
+    void restoreResults();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadPreferences() {
@@ -192,6 +354,8 @@ export default function Home() {
   }, []);
 
   async function saveInternship(input: {
+    internshipId?: string | null;
+    id?: string;
     sourceUrl: string;
     company: string | null;
     role: string | null;
@@ -209,22 +373,50 @@ export default function Home() {
         return;
       }
 
-      const { error } = await supabase.from("user_internships").upsert(
-        {
-          user_id: authData.user.id,
-          internship_source_url: input.sourceUrl,
-          company: input.company,
-          role: input.role,
-          application_url: input.applicationUrl,
-          status: "saved",
-        },
-        {
-          onConflict: "user_id,internship_source_url",
-          ignoreDuplicates: true,
-        }
-      );
-
+      const resolvedInternshipId = input.internshipId ?? input.id ?? null;
+      const { data: internship, error: internshipError } = resolvedInternshipId
+        ? { data: { id: resolvedInternshipId }, error: null }
+        : await supabase
+            .from("internships")
+            .select("id")
+            .eq("source_url", input.sourceUrl)
+            .maybeSingle();
+      if (internshipError || !internship) {
+        setSaveMessage("This opportunity is not available to save yet.");
+        return;
+      }
+      const { data: existingSave, error: existingError } = await supabase
+        .from("saved_internships")
+        .select("id")
+        .eq("user_id", authData.user.id)
+        .eq("internship_id", internship.id)
+        .maybeSingle();
+      if (existingError) {
+        setSaveMessage("Unable to check saved internships right now.");
+        return;
+      }
+      if (existingSave) {
+        setSavedUrls((current) => new Set(current).add(input.sourceUrl));
+        setSaveMessage("This internship is already saved.");
+        return;
+      }
+      const { data: savedRow, error } = await supabase.from("saved_internships").insert({
+        user_id: authData.user.id,
+        internship_id: internship.id,
+        application_status: "saved",
+      }).select("id, user_id, internship_id, application_status, created_at").single();
       if (error) {
+        const { data: duplicateSave } = await supabase
+          .from("saved_internships")
+          .select("id")
+          .eq("user_id", authData.user.id)
+          .eq("internship_id", internship.id)
+          .maybeSingle();
+        if (duplicateSave) {
+          setSavedUrls((current) => new Set(current).add(input.sourceUrl));
+          setSaveMessage("This internship is already saved.");
+          return;
+        }
         setSaveMessage("Unable to save this internship right now.");
         return;
       }
@@ -296,16 +488,15 @@ export default function Home() {
       });
       const data = (await response.json()) as SearchApiResponse;
 
-      console.log("Search response:", data);
-
       if (!response.ok) {
         setSearchError(data.error || "Unable to prepare your search.");
         return;
       }
 
-      setInternships(data.verificationResults);
+      const normalizedVerificationResults = data.verificationResults.map(normalizeInternshipResult);
+      setInternships(normalizedVerificationResults);
       const analyzedUrls = new Set(
-        data.verificationResults
+        normalizedVerificationResults
           .map((item) => item.internship.sourceUrl)
           .filter((url): url is string => Boolean(url))
       );
@@ -322,11 +513,33 @@ export default function Home() {
       });
       setMoreOpportunities(remainingOpportunities);
       setSearchMessage(data.message || "Search request completed.");
+      try {
+        window.sessionStorage.setItem(
+          SEARCH_RESULTS_STORAGE_KEY,
+          JSON.stringify({
+            message: data.message || "Search request completed.",
+            verificationResults: normalizedVerificationResults,
+            results: data.results ?? [],
+          })
+        );
+      } catch {
+        // Storage may be unavailable or full; the in-memory results remain usable.
+      }
+      void saveSearchHistory(filters);
     } catch {
       setSearchError("Unable to reach the search service. Please try again.");
     } finally {
       window.setTimeout(() => setIsLoading(false), 900);
     }
+  }
+
+  async function saveSearchHistory(filters: SearchFilters): Promise<void> {
+    const supabase = createClient();
+    const { data: authData } = await supabase.auth.getUser();
+    if (!authData.user) return;
+    const { data: latest } = await supabase.from("search_history").select("search_filters, created_at").eq("user_id", authData.user.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (latest && JSON.stringify(latest.search_filters) === JSON.stringify(filters) && Date.now() - Date.parse(latest.created_at) < 10 * 60 * 1000) return;
+    await supabase.from("search_history").insert({ user_id: authData.user.id, search_filters: filters });
   }
 
   return (
@@ -338,6 +551,12 @@ export default function Home() {
         </h1>
 
         <div className="flex items-center gap-4">
+          <a href="/recommendations" className="text-sm text-slate-300 hover:text-white">
+            Recommendations
+          </a>
+          <a href="/search-history" className="text-sm text-slate-300 hover:text-white">
+            Search History
+          </a>
           <a href="/tracker" className="text-sm text-slate-300 hover:text-white">
             Tracker
           </a>
@@ -631,6 +850,11 @@ export default function Home() {
                   ) : <div className="space-y-5">
                     {displayedInternships.map((item, index) => {
                   const internship = item.internship;
+                  const resolvedInternshipId =
+                    internship.internshipId ?? internship.id ?? null;
+                  const canSave = Boolean(resolvedInternshipId);
+                  const isSaving =
+                    savingUrl !== null && savingUrl === internship.sourceUrl;
                   const applyUrl =
                     internship.applicationUrl || internship.sourceUrl;
                   const requiredSkills = internship.requiredSkills ?? [];
@@ -770,6 +994,8 @@ export default function Home() {
                           type="button"
                           onClick={() =>
                             void saveInternship({
+                              internshipId: resolvedInternshipId,
+                              id: internship.id,
                               sourceUrl: internship.sourceUrl || "",
                               company: internship.company,
                               role: internship.role,
@@ -777,8 +1003,7 @@ export default function Home() {
                             })
                           }
                           disabled={
-                            !internship.sourceUrl ||
-                            savingUrl === internship.sourceUrl
+                            !canSave || isSaving
                           }
                           className="rounded-lg border border-blue-400/50 px-5 py-2.5 text-sm font-semibold text-blue-300 transition hover:bg-blue-400/10 disabled:cursor-not-allowed disabled:opacity-60"
                         >
@@ -786,7 +1011,9 @@ export default function Home() {
                             ? "Saved"
                             : savingUrl === internship.sourceUrl
                               ? "Saving..."
-                              : "Save"}
+                              : canSave
+                                ? "Save"
+                                : "Save unavailable"}
                         </button>
                         {applyUrl ? (
                           <a
@@ -848,22 +1075,18 @@ export default function Home() {
                             type="button"
                             onClick={() =>
                               void saveInternship({
-                                sourceUrl: opportunity.url,
+                              sourceUrl: opportunity.url,
                                 company: null,
                                 role: opportunity.title ?? null,
                                 applicationUrl: opportunity.url,
                               })
                             }
-                            disabled={
-                              savingUrl === opportunity.url
-                            }
+                            disabled
                             className="rounded-lg border border-blue-400/50 px-5 py-2.5 text-sm font-semibold text-blue-300 transition hover:bg-blue-400/10 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {savedUrls.has(opportunity.url)
                               ? "Saved"
-                              : savingUrl === opportunity.url
-                                ? "Saving..."
-                                : "Save"}
+                              : "Save unavailable"}
                           </button>
                           <a
                             href={opportunity.url}

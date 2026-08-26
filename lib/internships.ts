@@ -85,38 +85,59 @@ export function createPersistenceClient() {
 
 export async function upsertInternship(internship: InternshipInsert) {
   const supabase = createPersistenceClient();
-  const { data, error } = await supabase
+  const baseRecord = {
+    company: internship.company,
+    role: internship.role,
+    description: internship.description,
+    location: internship.location,
+    work_mode: internship.workMode,
+    posted_date: internship.postedDate,
+    deadline: internship.deadline,
+    duration: internship.duration,
+    stipend: internship.stipend,
+    experience_required: internship.experienceRequired,
+    graduation_requirements: internship.graduationRequirements,
+    required_skills: internship.requiredSkills,
+    application_url: internship.applicationUrl,
+    source_url: internship.sourceUrl,
+    source_domain: internship.sourceDomain,
+    status: internship.status ?? "active",
+  };
+  const fullRecord = {
+    ...baseRecord,
+    verification_status: internship.verificationStatus,
+    verification_score: internship.verificationScore,
+    verification_reasons: internship.verificationReasons,
+    last_verified_at: internship.lastVerifiedAt,
+  };
+  const existingLookup = await supabase
     .from("internships")
-    .upsert(
-      {
-        company: internship.company,
-        role: internship.role,
-        description: internship.description,
-        location: internship.location,
-        work_mode: internship.workMode,
-        posted_date: internship.postedDate,
-        deadline: internship.deadline,
-        duration: internship.duration,
-        stipend: internship.stipend,
-        experience_required: internship.experienceRequired,
-        graduation_requirements: internship.graduationRequirements,
-        required_skills: internship.requiredSkills,
-        application_url: internship.applicationUrl,
-        source_url: internship.sourceUrl,
-        source_domain: internship.sourceDomain,
-        status: internship.status ?? "active",
-        verification_status: internship.verificationStatus,
-        verification_score: internship.verificationScore,
-        verification_reasons: internship.verificationReasons,
-        last_verified_at: internship.lastVerifiedAt,
-      },
-      { onConflict: "source_url" }
-    )
-    .select()
-    .single();
+    .select("id")
+    .eq("source_url", internship.sourceUrl)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (existingLookup.error) {
+    throw new Error(`Unable to find internship: ${existingLookup.error.message}`);
+  }
+
+  const existingId = existingLookup.data?.id ?? null;
+  const writeRecord = async (record: typeof fullRecord | typeof baseRecord) =>
+    existingId
+      ? supabase.from("internships").update(record).eq("id", existingId).select().single()
+      : supabase.from("internships").insert(record).select().single();
+
+  let { data, error } = await writeRecord(fullRecord);
+  if (error && /verification_(status|score|reasons)/i.test(error.message)) {
+    ({ data, error } = await writeRecord(baseRecord));
+  }
 
   if (error) {
     throw new Error(`Unable to upsert internship: ${error.message}`);
+  }
+
+  if (!data || typeof data.id !== "string" || data.id.length === 0) {
+    throw new Error("Internship upsert completed without returning a database ID.");
   }
 
   return data;

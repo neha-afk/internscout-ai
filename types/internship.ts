@@ -84,18 +84,21 @@ export interface JobAlertMatchResult {
 export interface UserInternship {
   id: string;
   user_id: string;
-  internship_source_url: string;
-  company: string | null;
-  role: string | null;
-  application_url: string | null;
-  status: ApplicationStatus;
+  internship_id: string;
+  application_status: ApplicationStatus;
   notes: string | null;
   created_at: string;
-  updated_at: string;
+  application_deadline: string | null;
+  follow_up_date: string | null;
+  company?: string | null;
+  role?: string | null;
+  application_url?: string | null;
+  source_url?: string | null;
 }
 
 export interface Internship {
   id: string;
+  internshipId?: string;
   company: string | null;
   role: string | null;
   description: string | null;

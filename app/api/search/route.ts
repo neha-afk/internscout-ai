@@ -318,6 +318,8 @@ async function scrapeSelectedCandidates(
 }
 
 type StructuredInternship = {
+  id?: string;
+  internshipId?: string;
   sourceUrl: string;
   applicationUrl: string | null;
   company: string | null;
@@ -1194,10 +1196,10 @@ async function persistVerificationResults(
     internship: StructuredInternship;
     verification: VerificationResult;
   }>
-): Promise<void> {
+): Promise<Map<string, string>> {
   const verifiedAt = new Date().toISOString();
-
-  await Promise.allSettled(
+  const persistedIds = new Map<string, string>();
+  const settled = await Promise.allSettled(
     verificationResults.map(async ({ internship, verification }) => {
       const databaseRecord: InternshipInsert = {
         company: internship.company,
@@ -1221,9 +1223,22 @@ async function persistVerificationResults(
         lastVerifiedAt: verifiedAt,
       };
 
-      await upsertInternship(databaseRecord);
+      const saved = await upsertInternship(databaseRecord) as { id?: unknown } | null;
+      return { sourceUrl: internship.sourceUrl, id: typeof saved?.id === "string" ? saved.id : null };
     })
   );
+  for (const result of settled) {
+    if (result.status === "fulfilled" && result.value.id) {
+      persistedIds.set(result.value.sourceUrl, result.value.id);
+    } else if (result.status === "fulfilled") {
+      console.error("Internship persistence returned no database ID.", {
+        sourceUrl: result.value.sourceUrl,
+      });
+    } else {
+      console.error("Internship persistence failed.", result.reason);
+    }
+  }
+  return persistedIds;
 }
 
 function cachedSkills(value: unknown): string[] {
@@ -1269,6 +1284,7 @@ function createCachedVerificationResults(
     return {
       internship: {
         id: row.id,
+        internshipId: row.id,
         company: row.company,
         role: row.role,
         description: row.description,
@@ -1301,7 +1317,10 @@ function createCachedVerificationResults(
 
 type VerificationResultItem = {
   internship: {
+    id?: string;
+    internshipId?: string;
     sourceUrl: string | null;
+    applicationUrl?: string | null;
   };
   match: {
     score: number;
@@ -1580,14 +1599,21 @@ export async function POST(request: Request) {
           right.match.score - left.match.score ||
           right.verification.score - left.verification.score
       );
-    await persistVerificationResults(freshVerificationResults);
-    const verificationResults = mergeVerificationResults(
+    const persistedIds = await persistVerificationResults(freshVerificationResults);
+    const freshResultsWithIds = freshVerificationResults.map((item) => ({
+      ...item,
+      internship: {
+        ...item.internship,
+        id: persistedIds.get(item.internship.sourceUrl) ?? "",
+        internshipId: persistedIds.get(item.internship.sourceUrl) ?? "",
+      },
+    }));
+      const verificationResults = mergeVerificationResults(
       cachedInternships.length > 0
         ? createCachedVerificationResults(cachedInternships, body)
         : [],
-      freshVerificationResults
-    );
-
+      freshResultsWithIds
+      );
     return NextResponse.json(
       {
         message: "Internship search completed successfully.",

@@ -23,6 +23,22 @@ const statusLabels: Record<ApplicationStatus, string> = {
   rejected: "Rejected",
 };
 
+function daysFromToday(value: string): number {
+  const [year, month, day] = value.split("-").map(Number);
+  const target = new Date(year, month - 1, day);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((target.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+function dateStatus(value: string | null, label: string): string | null {
+  if (!value) return null;
+  const days = daysFromToday(value);
+  if (days === 0) return `${label}: Today`;
+  if (days > 0) return `${label} in ${days} days`;
+  return label === "Deadline" ? "Deadline passed" : "Follow-up overdue";
+}
+
 export default function TrackerPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [items, setItems] = useState<UserInternship[]>([]);
@@ -43,10 +59,10 @@ export default function TrackerPage() {
 
       setUserId(authData.user.id);
       const { data, error: queryError } = await supabase
-        .from("user_internships")
-        .select("*")
+        .from("saved_internships")
+        .select("id, user_id, internship_id, application_status, notes, created_at, application_deadline, follow_up_date")
         .eq("user_id", authData.user.id)
-        .order("updated_at", { ascending: false });
+        .order("created_at", { ascending: false });
 
       if (cancelled) return;
       if (queryError) {
@@ -54,8 +70,18 @@ export default function TrackerPage() {
         setMessage("");
         return;
       }
-      setItems((data ?? []) as UserInternship[]);
-      setMessage(data?.length ? "" : "No saved internships yet.");
+      const savedRows = (data ?? []) as UserInternship[];
+      const internshipIds = [...new Set(savedRows.map((item) => item.internship_id))];
+      const { data: internshipRows } = internshipIds.length
+        ? await supabase.from("internships").select("id, company, role, application_url, source_url").in("id", internshipIds)
+        : { data: [] };
+      const details = new Map(((internshipRows ?? []) as Array<{ id: string; company: string | null; role: string | null; application_url: string | null; source_url: string | null }>).map((internship) => [internship.id, internship]));
+      const mappedItems = savedRows.map((item) => {
+        const internship = details.get(item.internship_id);
+        return { ...item, company: internship?.company ?? null, role: internship?.role ?? null, application_url: internship?.application_url ?? null, source_url: internship?.source_url ?? null };
+      });
+      setItems(mappedItems);
+      setMessage(mappedItems.length ? "" : "No saved internships yet.");
     }
 
     void loadTracker();
@@ -67,8 +93,8 @@ export default function TrackerPage() {
   async function updateStatus(id: string, status: ApplicationStatus) {
     if (!userId) return;
     const { error: updateError } = await supabase
-      .from("user_internships")
-      .update({ status })
+      .from("saved_internships")
+      .update({ application_status: status })
       .eq("id", id)
       .eq("user_id", userId);
     if (updateError) {
@@ -76,14 +102,34 @@ export default function TrackerPage() {
       return;
     }
     setItems((current) =>
-      current.map((item) => (item.id === id ? { ...item, status } : item))
+      current.map((item) => (item.id === id ? { ...item, application_status: status } : item))
+    );
+  }
+
+  async function updateDate(
+    id: string,
+    field: "application_deadline" | "follow_up_date",
+    value: string
+  ) {
+    if (!userId) return;
+    const { error: updateError } = await supabase
+      .from("saved_internships")
+      .update({ [field]: value || null })
+      .eq("id", id)
+      .eq("user_id", userId);
+    if (updateError) {
+      setError("Unable to update this date.");
+      return;
+    }
+    setItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, [field]: value || null } : item))
     );
   }
 
   async function removeItem(id: string) {
     if (!userId) return;
     const { error: deleteError } = await supabase
-      .from("user_internships")
+      .from("saved_internships")
       .delete()
       .eq("id", id)
       .eq("user_id", userId);
@@ -106,6 +152,7 @@ export default function TrackerPage() {
             <a href="/dashboard" className="hover:text-white">Dashboard</a>
             <a href="/" className="hover:text-white">Home</a>
             <a href="/preferences" className="hover:text-white">Preferences</a>
+            <a href="/recommendations" className="hover:text-white">Recommendations</a>
             <a href="/alerts" className="hover:text-white">Alerts</a>
             <a href="/alerts/matches" className="hover:text-white">Matches</a>
           </nav>
@@ -121,7 +168,7 @@ export default function TrackerPage() {
 
         <div className="space-y-8">
           {statuses.map((status) => {
-            const statusItems = items.filter((item) => item.status === status);
+            const statusItems = items.filter((item) => item.application_status === status);
             if (statusItems.length === 0) return null;
             return (
               <section key={status}>
@@ -141,7 +188,7 @@ export default function TrackerPage() {
                             {item.role || "Internship opportunity"}
                           </h3>
                           <a
-                            href={item.application_url || item.internship_source_url}
+                            href={item.application_url || item.source_url || "#"}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="mt-2 inline-block text-sm text-blue-300 hover:text-blue-200"
@@ -151,7 +198,7 @@ export default function TrackerPage() {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <select
-                            value={item.status}
+                            value={item.application_status}
                             onChange={(event) =>
                               void updateStatus(
                                 item.id,
@@ -174,6 +221,17 @@ export default function TrackerPage() {
                             Remove
                           </button>
                         </div>
+                      </div>
+                      <div className="mt-5 grid gap-4 border-t border-slate-800 pt-5 md:grid-cols-2">
+                        <label className="text-sm text-slate-300">Application deadline
+                          <input type="date" value={item.application_deadline ?? ""} onChange={(event) => void updateDate(item.id, "application_deadline", event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 p-2" />
+                          {dateStatus(item.application_deadline, "Deadline") && <span className={`mt-2 block text-xs ${item.application_deadline && daysFromToday(item.application_deadline) <= 3 ? "text-amber-300" : "text-slate-400"}`}>{dateStatus(item.application_deadline, "Deadline")}</span>}
+                          {item.application_deadline && daysFromToday(item.application_deadline) <= 3 && <span className="mt-1 block text-xs font-semibold text-amber-300">{daysFromToday(item.application_deadline) < 0 ? "Deadline Passed" : "Closing Soon"}</span>}
+                        </label>
+                        <label className="text-sm text-slate-300">Follow-up date
+                          <input type="date" value={item.follow_up_date ?? ""} onChange={(event) => void updateDate(item.id, "follow_up_date", event.target.value)} className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-800 p-2" />
+                          {dateStatus(item.follow_up_date, "Follow up") && <span className="mt-2 block text-xs text-slate-400">{dateStatus(item.follow_up_date, "Follow up")}</span>}
+                        </label>
                       </div>
                     </article>
                   ))}
