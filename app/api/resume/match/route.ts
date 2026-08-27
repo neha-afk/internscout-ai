@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   const { data: previous } = await client.from("resume_analyses").select("result").eq("user_id", authData.user.id).eq("resume_id", body.resumeId).eq("internship_id", body.internshipId).maybeSingle();
   const cached = previous?.result as (typeof deterministic & { geminiEnhanced?: boolean }) | null;
   if (cached?.geminiEnhanced) return NextResponse.json(cached);
-  let result: typeof deterministic & { geminiEnhanced?: boolean } = deterministic;
+  let result: typeof deterministic & { geminiEnhanced: boolean } = { ...deterministic, geminiEnhanced: false };
   if (process.env.GEMINI_API_KEY) {
     try {
       const ai = await generateGeminiJson<Partial<typeof deterministic>>(`Analyze this internship against the sanitized resume. Never invent facts. Only report skills, projects, experience, and qualifications supported by the supplied text.\nINTERNSHIP:\n${JSON.stringify(internship)}\nDETERMINISTIC ANALYSIS:\n${JSON.stringify(deterministic)}\nRESUME:\n${sanitizeResumeText(resume.extracted_text ?? "")}`);
