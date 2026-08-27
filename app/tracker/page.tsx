@@ -195,6 +195,9 @@ export default function TrackerPage() {
                           >
                             View application
                           </a>
+                          <a href={`/copilot?internshipId=${encodeURIComponent(item.internship_id)}`} className="ml-3 text-sm text-purple-300 hover:text-purple-200">
+                            Application Copilot
+                          </a>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <select

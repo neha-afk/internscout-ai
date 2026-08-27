@@ -1,821 +1,318 @@
-We are building a full-stack project called INTERN SCOUT AI.
+# InternScout AI — Technical Handoff
 
-You are my technical project partner. Continue from the exact current state described below.
+> Repository-generated context for another AI assistant. This describes only behavior evidenced by the current repository. If live Supabase state cannot be proven from migrations, it is explicitly marked as not determinable.
 
-IMPORTANT RULES:
-1. Do not randomly change the tech stack or architecture.
-2. Do not skip steps.
-3. Before giving code, check the CURRENT PROJECT STATE below.
-4. Do not assume a file/folder/database table exists unless listed below.
-5. Explain exactly WHERE to create/edit every file because I am building manually in VS Code.
-6. Give one manageable step at a time unless I specifically ask for multiple steps.
-7. After each major step, update the PROJECT STATE so I can save it.
-8. If something previously recommended is incorrect or outdated, explicitly correct it instead of silently changing direction.
-9. Do not expose secret API keys in frontend code.
-10. We are building a real portfolio-quality project, not just a UI demo.
+## 1. Project Overview
 
-==================================================
-PROJECT NAME
-==================================================
+InternScout AI is a Next.js internship discovery and application-assistance platform for students. Authenticated users search for internships, receive filtered and verified opportunities, save and track applications, manage preferences and alerts, upload resumes, compare resumes to internships, and generate application content.
 
-InternScout AI
+High-level flow:
 
-An intelligent internship discovery platform.
+```text
+Search filters → /api/search → Firecrawl discovery → local filtering/ranking
+→ limited scraping → extraction → eligibility/match/verification
+→ Supabase persistence → UUID-bearing results → save/tracker/resume/Copilot
+```
 
-The application should discover CURRENT tech internship openings from the web based on filters selected by the user.
+## 2. Core Features
 
-The user should be able to find internships based on:
+### Search and discovery
 
-- Role
-- Skills
-- Graduation year
-- Experience
-- Location
-- Remote / Hybrid / Onsite preference
-- Posted within X days
-- Paid/unpaid
-- Minimum stipend
-- Internship duration
+`app/page.tsx` owns the dark search UI, filters, loading/errors, result cards, save actions, session-storage restoration, and “More Opportunities”. `app/api/search/route.ts` validates filters, checks fresh cached rows, generates up to five queries, searches Firecrawl concurrently, normalizes/deduplicates URLs, separates community results, filters aggregators/listing pages, ranks/diversifies, selects at most three candidates, scrapes only those candidates, extracts fields, evaluates eligibility/match/verification, persists valid results, and returns JSON.
 
-The system will use Firecrawl for web discovery and scraping.
+### Query generation
 
-IMPORTANT:
-We are NOT literally scraping the entire internet.
+Interactive queries combine role with mode/location, up to three skills, graduation-year student wording, fresher wording, and a mixed Greenhouse/Ashby/Lever query. The list is unique and capped at five. `lib/discovery-queries.ts` contains separate fixed queries for scheduled discovery.
 
-The architecture should be:
+### Filtering and quality
 
-User Filters
-    ↓
-Query Generation Engine
-    ↓
-Firecrawl Search
-    ↓
-Relevant Job URL Collection
-    ↓
-URL Filtering
-    ↓
-Firecrawl Scraping
-    ↓
-Structured Internship Extraction
-    ↓
-Eligibility Checking
-    ↓
-Duplicate Detection
-    ↓
-Match Scoring
-    ↓
-Supabase Database
-    ↓
-Internship Results Dashboard
+Social/community links are retained in `communityResults` but are not job listings. Aggregator domains (Glassdoor, LinkedIn, Indeed, Naukri, Internshala, ZipRecruiter, SimplyHired, Monster) and obvious search/listing URLs are rejected before candidate selection. Search markers include `SRCH_`, `/search`, `/search-results`, `/listing(s)`, query-bearing `/jobs`, and common query/pagination parameters.
 
-==================================================
-CORE FEATURES
-==================================================
+URLs are normalized to HTTPS, tracking parameters and fragments removed, and trailing slashes removed. Exact normalized URLs are deduplicated. Company+role normalization collapses obvious duplicate opportunities. Domain round-robin ordering and `applyDomainCap()` prevent one domain dominating. `SCRAPE_BUDGET` is 3.
 
-PHASE 1 — MVP
+### Persistence and saved jobs
 
-1. Authentication
-2. User internship filters
-3. Firecrawl internship discovery
-4. Smart search query generation
-5. Scrape actual job pages
-6. Extract structured internship information
-7. Store internships in Supabase
-8. Eligibility checker
-9. Personalized match score
-10. Duplicate detection
-11. Internship cards
-12. Direct application links
-13. Save/bookmark internships
+`lib/internships.ts` uses a server-only service-role client. `upsertInternship()` looks up by `source_url`, updates by ID or inserts, selects the resulting row, and returns its UUID. `persistVerificationResults()` uses `Promise.allSettled()`, skips missing-company records, and maps IDs to both `internship.id` and `internship.internshipId`.
 
-PHASE 2
+The frontend saves analyzed jobs using the database UUID. `/api/internships/lookup` repairs cached result IDs server-side. Tracker and dashboard read user saved records. The exact live definition of `saved_internships` is not created in repository migrations; known code fields include `user_id`, `internship_id`, `application_status`, `created_at`, notes, and optional date fields.
 
-14. AI natural language search
+### Authentication and supporting features
 
-Example:
-"I am a 2028 CSE student from India. I know React, Node.js and Python. Find remote internships posted this week with no experience requirement."
+`lib/supabase/server.ts` creates cookie-backed server clients; `lib/supabase/client.ts` creates browser clients; `middleware.ts` refreshes sessions. `AuthNav` provides sign-out/navigation. Preferences, job alerts, alert matches, notifications, search history, recommendations, tracker/dashboard, resumes, and Copilot are implemented in their corresponding `app/` pages and libraries.
 
-The system should convert this into structured filters.
+## 3. Complete User Journey
 
-15. Freshness verification
+1. User opens the search page and signs in when needed.
+2. Filters are validated in the browser and POSTed to `/api/search`.
+3. The route validates again and checks fresh active cache rows.
+4. A cache hit returns cached analysis without Firecrawl; otherwise up to five searches run concurrently.
+5. URLs are normalized/deduplicated; aggregators/listing pages are removed and community links separated.
+6. Results are marked against `shown_internships`, diversified/ranked, and three or fewer candidates selected.
+7. Selected pages are scraped concurrently with failure isolation.
+8. Structured fields, eligibility, match, and verification are calculated.
+9. Valid internships are persisted and public database UUIDs attached.
+10. The frontend displays analyzed cards and additional opportunities, saving the payload in sessionStorage.
+11. Save Job inserts the authenticated user’s saved record.
+12. Tracker, dashboard, and recommendations reuse those records.
+13. User can upload a PDF, run resume match, and use Copilot for application content.
 
-Show:
-Posted 2 days ago
-Verified 3 hours ago
+## 4. Technology Stack
 
-Closed or expired jobs should eventually be marked inactive.
+| Category | Technology | Purpose | Where used |
+|---|---|---|---|
+| Framework | Next.js 16.3.3 | App Router UI/API | `app/` |
+| UI | React 19.2.8 | Components/state | Pages/components |
+| Language | TypeScript | Type safety | Source tree |
+| Styling | Tailwind CSS 4 | Dark UI | JSX/classes |
+| Backend | Supabase JS 2.112.4, SSR 0.12.5 | Auth, PostgreSQL, Storage | `lib/supabase`, routes |
+| Discovery | Firecrawl 4.35.0 | Search and selected scraping | Search/scheduled discovery |
+| AI | Gemini REST API | Optional enhancement | `lib/gemini.ts` |
+| Tests | Vitest 4.1.11 | Pure discovery tests | `tests/` |
+| PDF extraction | TextDecoder heuristic | Initial PDF text extraction | Resume upload route |
 
-16. Application tracker
+## 5. Frontend Architecture
 
-Saved
-→ Applied
-→ Assessment
-→ Interview
-→ Offer
-→ Rejected
+Important pages: `app/page.tsx` search; `dashboard/page.tsx`; `tracker/page.tsx`; `preferences/page.tsx`; `alerts/page.tsx`; `alerts/matches/page.tsx`; `notifications/page.tsx`; `search-history/page.tsx`; `recommendations/page.tsx`; `resume/page.tsx`; and `copilot/page.tsx`.
 
-17. Search history
+`AuthNav` centralizes authenticated navigation/sign-out. `NotificationBell` reads notification rows and marks read state. `SearchableMultiSelect` supplies dynamic suggestions, curated fallback, chips, keyboard navigation, and custom values. Search state includes filters, verification results, save/loading messages, and session-storage restoration.
 
-18. Internship alerts/notifications
+## 6. Backend/API Architecture
 
-==================================================
-TECH STACK
-==================================================
+| Route | Method | Auth | Purpose | External services |
+|---|---|---|---|---|
+| `/api/search` | POST | Search can be public; user cache tracking is authenticated | Discovery/analyze/persist | Firecrawl, Supabase |
+| `/api/internships/lookup` | POST | Required | Repair/persist cached objects and return IDs | Supabase |
+| `/api/suggestions` | GET | Optional | Suggestions plus fallback values | Supabase |
+| `/api/resume/upload` | POST | Required | Validate/upload PDF and save metadata | Supabase |
+| `/api/resume/match` | POST | Required | Deterministic plus optional Gemini match | Supabase, Gemini |
+| `/api/copilot` | POST | Required | Generate/cache application content | Supabase, Gemini |
+| `/api/cron/job-alerts` | POST | Bearer `CRON_SECRET` | Run alert matching | Supabase |
+| `/api/cron/discover-internships` | POST | Bearer `CRON_SECRET` | Scheduled discovery | Firecrawl, Supabase |
+| `/auth/callback` | GET | OAuth callback | Exchange auth code | Supabase Auth |
 
-Frontend:
-Next.js
-TypeScript
-Tailwind CSS
+Cron GET requests return 405. Auth failures return 401 and internal failures use safe generic responses.
 
-Current project uses App Router.
+## 7. Internship Search Pipeline
 
-IMPORTANT:
-This project DOES NOT have a src folder.
+The route parses and validates `SearchFilters`, then calls `getCachedInternships()` for fresh active rows. At least three suitable cached rows produce a cache response without Firecrawl.
 
-The project structure currently starts like this:
+The normal path calls `generateSearchQueries()`, runs `firecrawl.search(query, { limit: 5 })` with `Promise.all`, and collects `results.web`. `normalizeResultUrl()` handles protocol, fragments, tracking parameters, and slashes. A Map removes duplicate normalized URLs.
 
-internscout-ai/
-│
-├── app/
-├── lib/
-├── public/
-├── .env.local
-├── package.json
-├── tsconfig.json
-└── other Next.js config files
+`annotatePreviouslyShown()` checks per-user normalized URLs in `shown_internships`; `recordShownInternships()` upserts surfaced URLs after processing. `filterSearchResults()` excludes aggregators, listing/search pages, explicit non-internship roles, and irrelevant pages. Community/social/blog results remain separate.
 
-Backend:
-Initially Next.js API routes / server-side code.
+`diversifyResults()` round-robins domains. `applyDomainCap()` limits the surfaced set to approximately 40% per domain, with an upper cap of three. Candidate scoring prefers specific internships, student eligibility, non-generic pages, and higher source priority; previously shown results are deprioritized. Candidate selection first takes one result per domain and never exceeds three.
 
-Database:
-Supabase PostgreSQL
+`scrapeSelectedCandidates()` scrapes only those candidates using Firecrawl and `Promise.allSettled()`. Extraction computes application URL, company, role, description, location, work mode, skills, experience, education, stipend, and duration. Valid records are persisted, IDs attached, and the response returned.
 
-Authentication:
-Supabase Auth
+## 8. Data Extraction and Company Resolution
 
-Web Search + Scraping:
-Firecrawl API
+Markdown/text is cleaned by removing image syntax, formatting, links, URLs, and empty lines. Description extraction prefers “About the Role”, “Job Description”, “What You’ll Do”, and responsibility headings, stopping at major requirement/benefit/about sections. Education extraction searches Qualifications, Requirements, Education, Academic Background, and labeled fields.
 
-Deployment later:
-Vercel + Supabase
+Application links prefer markdown links containing “apply”, otherwise source URL. Skills use a fixed recognized vocabulary. Location, work mode, stipend, duration, and experience use conservative regexes.
 
-==================================================
-CURRENT PROJECT STATUS
-==================================================
+Company resolution order is:
+1. `Company - Role` title format.
+2. ATS path slugs for Lever, Greenhouse, and Ashby.
+3. Non-ATS/non-aggregator root-domain normalization, including known `jpmorganchase.com` mapping.
+4. Null when no meaningful value exists.
 
-The Next.js project has already been created.
+Missing company causes persistence of only that result to be skipped. JSON-LD/Open Graph extraction is not implemented in the current route.
 
-The development server works.
+## 9. Database Architecture
 
-The project is opened in VS Code.
+Migrations define:
 
-There is NO src directory.
+- `internships`: global cache, UUID ID, job fields, verification fields, status/timestamps, source URL uniqueness in migration 001, indexes, trigger, RLS.
+- `user_preferences`: one user row with JSONB arrays and graduation/experience fields.
+- `job_alerts`: user alert definitions and active/check fields.
+- `job_alert_matches`: alert/source match score and reasons, unique alert/source pair.
+- `notifications`: user notifications with dedupe key and read state.
+- `search_history`: user filter JSONB and timestamp.
+- `user_resumes`: user metadata, storage path, extracted text.
+- `resume_analyses`: unique user/resume/internship JSON result.
+- `application_copilot_outputs`: unique user/resume/internship/output-type content.
+- `shown_internships`: user/normalized URL primary key and first/last shown timestamps.
 
-Therefore all paths must use:
+`saved_internships`, `profiles`, and `public.users` are referenced by code/migrations but their complete creation definitions are not in this repository. Exact live columns are not determinable from repository files. Migrations 007–009 repair ownership foreign keys; migration 015 aligns `internships.company` with the confirmed live NOT NULL constraint.
 
+## 10. Row Level Security
+
+RLS is enabled on migration-created user-owned tables. Policies use `auth.uid() = user_id` for ownership. Update policies include both `USING` and `WITH CHECK`. Alert-match selection verifies ownership through the parent alert. Resume storage policies restrict the first path folder to the authenticated user ID.
+
+Browser operations use authenticated sessions and RLS. Server cookie clients use `lib/supabase/server.ts`. Service-role access is confined to `createPersistenceClient()` and server routes.
+
+## 11. Supabase Storage
+
+Migration 012 creates a private `resumes` bucket. Files use `<user-id>/<resume-id>.pdf`. Upload validates PDF type and a 5 MB limit, uploads privately, extracts text, inserts metadata, and removes the file if metadata persistence fails. Storage policies scope access by the first path segment.
+
+## 12. Internship Persistence and Save Job Flow
+
+Search analysis creates `InternshipInsert` records. `upsertInternship()` finds by source URL, updates or inserts, selects the row, and throws if no UUID is returned. `persistVerificationResults()` isolates writes with `Promise.allSettled()` and logs failures.
+
+The API sets both `internship.id` and `internship.internshipId` to the returned UUID. The frontend preserves both in fresh results and session storage. Cached objects without IDs are repaired through the authenticated lookup/persist endpoint.
+
+Save Job resolves `internshipId ?? id` and inserts `user_id`, `internship_id`, and `application_status: "saved"`. Tracker/dashboard/recommendations use the same saved records. Missing UUIDs or failed persistence never produce a false Saved state.
+
+## 13. Resume System
+
+Authenticated PDF upload is limited to 5 MB. Server extraction uses a Latin-1 `TextDecoder` heuristic, removes null bytes/basic escapes, and stores text. `sanitizeResumeText()` removes emails, phone numbers, addresses, and truncates to 18,000 characters.
+
+`analyzeResumeMatch()` compares normalized skills and role words, extracts project/experience sentences, reports education/experience concerns, computes a bounded 0–100 score, assigns a recommendation, and creates suggestions. The match route may merge Gemini JSON and caches by user/resume/internship.
+
+## 14. Gemini AI Integration
+
+`lib/gemini.ts` uses model `gemini-3.6-flash` at `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent`. It reads `GEMINI_API_KEY?.trim()` server-side and sends `x-goog-api-key`. Requests use `contents[].parts[].text` and temperature 0.2.
+
+Resume match and Copilot call Gemini only when configured. Resume text is sanitized first. Responses are parsed as text/JSON; failures are logged server-side and deterministic behavior remains the fallback. No secret values are included in this report.
+
+## 15. Application Copilot
+
+Copilot requires authentication, a saved internship, and a latest resume. It loads internship, resume, and cached match data, then checks `application_copilot_outputs`. Deterministic templates cover good fit, cover letter, HR message, cold email, follow-up, interview prep, and highlight guidance. Optional Gemini generation is instructed not to invent facts. Results are cached per user/resume/internship/type with RLS.
+
+## 16. Caching and Credit Optimization
+
+Fresh active internship caching can skip Firecrawl. Search payloads are stored in `sessionStorage` under `internscout:latest-search-results`; restoration makes no search call. Cached ID repair uses one server request and no Firecrawl. Only three candidates are scraped. Aggregator/listing filtering runs before scraping. URL and title deduplication, shown-result tracking, resume-analysis caching, and Copilot caching reduce repeated work.
+
+## 17. Environment Variables
+
+| Variable | Purpose | Scope | Required |
+|---|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase URL | Browser/server | Yes |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Public Supabase key | Browser/server | Yes |
+| `SUPABASE_SERVICE_ROLE_KEY` | Persistence client | Server only | Persistence |
+| `FIRECRAWL_API_KEY` | Firecrawl | Server only | Discovery |
+| `CRON_SECRET` | Cron bearer authorization | Server only | Scheduled routes |
+| `GEMINI_API_KEY` | Optional Gemini | Server only | Optional enhancement |
+
+## 18. Security Architecture
+
+Supabase Auth identifies users and middleware refreshes sessions. RLS scopes user-owned rows. Service-role credentials are used only by server helpers/routes. Resume files are private and path-scoped. Resume text is sanitized before Gemini. Cron endpoints require bearer authorization. Error responses avoid exposing secrets and internal credentials.
+
+## 19. Error Handling and Fallbacks
+
+Firecrawl searches/scrapes are isolated; empty query results do not abort the route. Invalid URLs and listing pages are removed before scraping. Missing company skips only the affected persistence item. Persistence failures are logged and do not block other records. Missing UUIDs prevent false saves, while lookup repair can recover rows. Upload cleans orphaned files. Gemini failures fall back deterministically. Unauthenticated operations return 401; cache/tracking failures generally fall back silently.
+
+## 20. Testing
+
+`tests/discovery-quality.test.ts` uses Vitest and covers domain capping, URL normalization, dated-vs-unknown freshness, shown-result deprioritization, and ATS/direct-company extraction (Lever, Greenhouse, Ashby, title format, aggregator/unresolvable, direct domains). The suite was run with `npx vitest run --pool=threads`; all current tests passed. There are no end-to-end, RLS, Firecrawl, Gemini, or live-network tests.
+
+## 21. Current Project Structure
+
+```text
 app/
-lib/
+  page.tsx
+  dashboard/ tracker/ preferences/ alerts/ notifications/
+  recommendations/ search-history/ resume/ copilot/
+  api/search/ suggestions/ internships/lookup/ copilot/
+  api/resume/{upload,match}/ api/cron/{job-alerts,discover-internships}/
+components/{AuthNav,NotificationBell,SearchableMultiSelect}.tsx
+lib/{internships,job-alerts,recommendations,resume-match,application-copilot,gemini,scheduled-discovery,discovery-queries,suggestion-options}.ts
+lib/supabase/{client,server}.ts
+types/internship.ts
+supabase/migrations/001_... through 015_...
+tests/discovery-quality.test.ts
+package.json, middleware.ts, next.config.ts, vercel.json, vitest.config.ts
+```
+
+## 22. Known Limitations / Potential Issues
+
+- PDF extraction is heuristic and may miss text.
+- Posting freshness depends on available source timestamps.
+- Firecrawl markup varies, making extraction best-effort.
+- Gemini can fail or return malformed output.
+- Exact live schemas for externally created saved/profile tables are not determinable here.
+- Service-role/deployment secrets must be configured correctly.
+- Domain caps can reduce visible result count when one source dominates.
+- Notifications are in-app only; no delivery service exists.
+- No comprehensive end-to-end test suite exists.
+
+## 23. Future Improvement Opportunities
+
+### High Priority
+
+- Generate Supabase database types to prevent schema drift, especially for saved internships.
+- Replace heuristic PDF extraction with a maintained PDF parser.
+- Add mocked integration tests for Save Job, UUID propagation, and RLS behavior.
+
+### Medium Priority
+
+- Persist posting dates from structured metadata.
+- Add Gemini model capability/configuration checks.
+- Improve company resolution using structured JobPosting/Organization metadata.
+
+### Low Priority
+
+- Add source-diversity/cache-hit analytics.
+- Add notification delivery integrations later.
+- Add retention/pagination for search history and shown records.
+
+## 24. Architecture Diagram
+
+```mermaid
+flowchart TD
+  U[User] --> FE[Next.js Frontend]
+  FE --> AUTH[Supabase Auth]
+  FE --> API[Next.js API routes]
+  API --> FC[Firecrawl search and scrape]
+  API --> GEM[Gemini REST API optional]
+  API --> DB[(Supabase PostgreSQL)]
+  API --> ST[(Private Supabase Storage)]
+  FE -->|search filters| API
+  API -->|discover/filter/rank/scrape| FC
+  API -->|internship UUIDs and analyses| DB
+  FE -->|save/status/dates| DB
+  FE -->|resume upload| API
+  API -->|sanitized resume| GEM
+  API -->|resume metadata| DB
+  API -->|PDF file| ST
+  FE -->|match/Copilot actions| API
+```
+
+## 25. AI HANDOFF SUMMARY
+
+### Project Identity
+
+InternScout AI is a Supabase-backed Next.js platform for controlled internship discovery and personalized application assistance.
+
+### Current Architecture
+
+Next.js App Router, Supabase Auth/RLS, server-only service-role persistence, Firecrawl with a five-query/three-scrape budget, shared TypeScript types, and deterministic resume/Copilot fallbacks with optional Gemini.
+
+### Important Data Flows
+
+- Search: filters → discovery/filter/rank/scrape/extract/analyze/verify → persistence → UUID-bearing results.
+- Save: UUID → authenticated saved internship row → tracker/dashboard/recommendations.
+- Resume: PDF → private Storage → extracted/sanitized text → deterministic/Gemini match.
+- Copilot: saved internship + resume + cached match → deterministic/optional Gemini content → per-user cache.
+
+### Important Constraints
+
+- Never expose service-role, Firecrawl, Gemini, or cron secrets.
+- Avoid unnecessary Firecrawl searches and scrapes.
+- Preserve internship UUIDs through API, React state, and session storage.
+- Respect RLS and authenticated ownership.
+- Keep deterministic fallbacks when Gemini is unavailable.
+- Filter aggregators/listing pages before scraping.
+- Never treat failed persistence as successful.
+
+### Current State
+
+Search, persistence, saved jobs, tracker/dashboard, preferences, alerts, notifications, search history, recommendations, resume upload/match, Copilot, scheduled endpoints, shown-result tracking, and discovery tests exist in the repository. Live migration application and externally created table schemas require Supabase inspection.
+
+### Important Files
+
+- `app/page.tsx`
+- `app/api/search/route.ts`
+- `lib/internships.ts`
+- `lib/resume-match.ts`
+- `lib/application-copilot.ts`
+- `lib/gemini.ts`
+- `types/internship.ts`
+- `components/AuthNav.tsx`
+- `components/NotificationBell.tsx`
+- `components/SearchableMultiSelect.tsx`
+- `app/tracker/page.tsx`
+- `app/dashboard/page.tsx`
+- `app/resume/page.tsx`
+- `supabase/migrations/`
 
-NOT:
-
-src/app/
-src/lib/
-
-==================================================
-SUPABASE SETUP
-==================================================
-
-A Supabase project already exists.
-
-The environment variables have been configured in:
-
-.env.local
-
-The environment variables are:
-
-NEXT_PUBLIC_SUPABASE_URL=
-
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
-
-The project URL and publishable key are already configured.
-
-Never ask me to expose or paste secret keys into the frontend.
-
-==================================================
-SUPABASE CLIENT FILES
-==================================================
-
-Current intended structure:
-
-lib/
-└── supabase/
-    ├── client.ts
-    └── server.ts
-
-client.ts contains the browser Supabase client.
-
-The intended code is:
-
-import { createBrowserClient } from "@supabase/ssr";
-
-export function createClient() {
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!
-  );
-}
-
-server.ts was also created for server-side Supabase access using @supabase/ssr and next/headers.
-
-==================================================
-DATABASE TABLES ALREADY CREATED
-==================================================
-
-The following tables already exist:
-
-1. profiles
-
-Columns:
-
-id
-full_name
-graduation_year
-experience_years
-created_at
-
-
-2. user_preferences
-
-Columns include:
-
-id
-user_id
-preferred_roles
-skills
-preferred_locations
-work_modes
-min_stipend
-paid_only
-posted_within_days
-created_at
-
-
-3. internships
-
-Columns include:
-
-id
-company
-role
-description
-location
-work_mode
-posted_date
-deadline
-duration
-stipend
-experience_required
-graduation_requirements
-required_skills
-application_url
-source_url
-source_domain
-status
-last_verified_at
-created_at
-
-
-4. saved_internships
-
-Columns include:
-
-id
-user_id
-internship_id
-application_status
-notes
-created_at
-
-
-application_status values are:
-
-saved
-applied
-assessment
-interview
-offer
-rejected
-
-==================================================
-DATABASE SECURITY
-==================================================
-
-RLS is enabled on:
-
-profiles
-user_preferences
-saved_internships
-internships
-
-For internships, the SQL verification showed:
-
-internships | rowsecurity = true
-
-There is already a policy:
-
-"Anyone can view active internships"
-
-Policy logic:
-
-SELECT is allowed when:
-
-status = 'active'
-
-Normal frontend users should NOT directly insert, update, or delete internships.
-
-Internship ingestion from Firecrawl must later happen securely on the server/backend.
-
-Never expose the Supabase service role key to the browser.
-
-==================================================
-CURRENT UI STATE
-==================================================
-
-The current homepage is:
-
-app/page.tsx
-
-It has already been replaced from the default Next.js page.
-
-The current page is a dark InternScout AI landing/search page.
-
-It currently includes:
-
-Navbar:
-- InternScout AI title
-- Sign In button
-
-Hero:
-"Find internships that actually match you."
-
-Search filters:
-
-1. Role
-   Options:
-   - Software Engineering
-   - Frontend Development
-   - Backend Development
-   - Full Stack Development
-   - AI/ML
-   - Data Science
-
-2. Location
-   Free text input
-
-3. Work Mode
-   - Remote
-   - Hybrid
-   - Onsite
-
-4. Graduation Year
-   - 2027
-   - 2028
-   - 2029
-   - 2030
-
-5. Posted Within
-   - Last 24 hours
-   - Last 3 days
-   - Last 7 days
-   - Last 30 days
-
-The "Search Internships" button currently only logs the selected filters.
-
-Firecrawl is NOT connected yet.
-
-The database is NOT yet being queried from the UI.
-
-Authentication is NOT yet implemented.
-
-==================================================
-NEXT DEVELOPMENT ROADMAP
-==================================================
-
-We should proceed in this order.
-
-STEP 1 — Finish the search UI foundation
-
-Improve the existing search page without overengineering it.
-
-Potential additions:
-
-- Skills input
-- Experience filter
-- Paid only toggle
-- Minimum stipend
-- Better validation
-- Loading state
-
-Do not completely redesign everything unnecessarily.
-
---------------------------------------------------
-
-STEP 2 — Create TypeScript types
-
-Create a central type definition for:
-
-Internship
-SearchFilters
-SearchResult
-EligibilityResult
-
-Suggested location:
-
-types/
-
-or another simple root-level location appropriate for this project.
-
---------------------------------------------------
-
-STEP 3 — Design the search request architecture
-
-When the user clicks:
-
-Search Internships
-
-The frontend should send filters to a secure server-side endpoint.
-
-Suggested architecture:
-
-Frontend
-↓
-POST /api/search
-
-The API route validates the filters.
-
-Do NOT call Firecrawl directly from the browser.
-
-The Firecrawl API key must remain server-side only.
-
---------------------------------------------------
-
-STEP 4 — Add Firecrawl environment variable
-
-Later add:
-
-FIRECRAWL_API_KEY=
-
-This must NOT have NEXT_PUBLIC_ in front of it.
-
---------------------------------------------------
-
-STEP 5 — Build smart query generation
-
-The backend should convert filters into multiple search queries.
-
-Example user filters:
-
-Role: AI/ML
-Graduation year: 2028
-Experience: 0
-Work mode: Remote
-Posted within: 7 days
-
-Possible generated searches:
-
-"AI ML Intern" remote student
-
-"Machine Learning Intern" remote fresher
-
-"AI Engineer Intern" remote student
-
-site:jobs.lever.co "Machine Learning Intern"
-
-site:boards.greenhouse.io "Software Engineer Intern"
-
-The exact queries should be intelligently generated based on selected roles and filters.
-
-Do not rely on only one query.
-
---------------------------------------------------
-
-STEP 6 — Firecrawl Search
-
-Use Firecrawl Search to discover relevant URLs.
-
-The search stage should find:
-
-- Official company careers pages
-- Startup careers pages
-- Job boards
-- Internship platforms
-- Relevant direct application pages
-
-Prioritize official company application URLs where possible.
-
---------------------------------------------------
-
-STEP 7 — Filter discovered URLs
-
-Before scraping, reject obvious irrelevant results such as:
-
-- Articles about internships
-- Internship advice blogs
-- Courses
-- Training programs pretending to be internships
-- Old news posts
-- Duplicate URLs
-- Obviously full-time jobs
-
---------------------------------------------------
-
-STEP 8 — Scrape relevant job pages
-
-Use Firecrawl to scrape selected job pages.
-
-Extract structured internship information:
-
-company
-role
-description
-location
-work_mode
-posted_date
-deadline
-duration
-stipend
-experience_required
-graduation_requirements
-required_skills
-application_url
-source_url
-source_domain
-
---------------------------------------------------
-
-STEP 9 — Eligibility engine
-
-Compare user information with internship requirements.
-
-Example:
-
-User:
-Graduation year: 2028
-Experience: 0
-Skills:
-React
-Node.js
-Python
-
-Output:
-
-Eligible
-Possibly Eligible
-Not Eligible
-
-Also provide an explanation.
-
-Example:
-
-"Likely eligible because the role accepts current students, does not require previous professional experience, and does not exclude the user's graduation year."
-
-Do not claim eligibility with certainty when the job posting is ambiguous.
-
---------------------------------------------------
-
-STEP 10 — Match scoring
-
-Create a transparent scoring system.
-
-Example factors:
-
-Role match
-Skills match
-Graduation year compatibility
-Experience compatibility
-Location preference
-Work mode preference
-Freshness
-
-The score should return 0–100.
-
-Example display:
-
-96% Match
-
-Also show:
-
-Why this match?
-
-Example:
-
-✓ Role matches preference
-✓ Remote preference matches
-✓ 4/5 skills matched
-✓ No experience required
-✓ Posted 2 days ago
-
---------------------------------------------------
-
-STEP 11 — Duplicate detection
-
-The same internship may appear on:
-
-Company website
-LinkedIn
-Internshala
-Indeed
-Other sources
-
-Do not show duplicates.
-
-Prefer:
-
-1. Official company application page
-2. Official ATS page
-3. Reputable job board
-
-Potential duplicate fields:
-
-company
-role
-location
-application URL
-normalized role title
-
---------------------------------------------------
-
-STEP 12 — Save internships to Supabase
-
-Only verified/processed internships should be stored.
-
-Before inserting:
-
-Check for duplicates.
-
-Internship writes must happen securely from server-side code.
-
---------------------------------------------------
-
-STEP 13 — Display real results
-
-Replace the current console.log behavior with actual search results.
-
-Show:
-
-Company
-Role
-Location
-Work mode
-Posted date
-Stipend
-Match score
-Eligibility status
-
-Buttons:
-
-View Details
-Apply
-Save
-
---------------------------------------------------
-
-STEP 14 — Saved internships
-
-Connect the existing:
-
-saved_internships
-
-table.
-
-Users should be able to:
-
-Save
-Unsave
-Change application status
-Add notes
-
---------------------------------------------------
-
-STEP 15 — Authentication
-
-Add Supabase Auth.
-
-Possible options:
-
-Email/password
-Google login
-
-After login:
-
-Create/manage profile.
-
-Eventually save:
-
-Graduation year
-Experience
-Skills
-Preferences
-
---------------------------------------------------
-
-STEP 16 — Freshness verification
-
-Later implement periodic verification.
-
-For every stored internship:
-
-last_verified_at
-
-Check whether the listing is still available.
-
-If closed:
-
-status = closed
-
-If expired:
-
-status = expired
-
-Normal users should only see:
-
-status = active
-
---------------------------------------------------
-
-STEP 17 — AI natural language search
-
-After the core filter-based system works.
-
-Example input:
-
-"I am a 2028 CSE student from India. I know React, Node.js and Python. Find remote internships posted this week with no experience."
-
-Convert to:
-
-{
-  roles: [],
-  skills: [],
-  graduationYear: 2028,
-  experience: 0,
-  location: "India",
-  workMode: "remote",
-  postedWithinDays: 7
-}
-
-Then run the normal search pipeline.
-
-==================================================
-IMPORTANT ARCHITECTURAL PRINCIPLES
-==================================================
-
-1. Firecrawl API key must NEVER be exposed to the frontend.
-
-2. Supabase service role key must NEVER be exposed to the frontend.
-
-3. Search first, scrape selectively afterward to reduce unnecessary API usage.
-
-4. Do not blindly trust scraped data.
-
-5. Eligibility should be:
-   - Eligible
-   - Possibly Eligible
-   - Not Eligible
-
-when information is ambiguous.
-
-6. Prioritize current job postings based on the user's selected time window.
-
-7. Prefer official application links.
-
-8. Do not scrape hundreds of pages unnecessarily.
-
-9. Use server-side API routes for Firecrawl operations.
-
-10. Build the MVP first before adding AI features and background workers.
-
-==================================================
-CURRENT EXACT POSITION
-==================================================
-
-We have completed:
-
-✓ Next.js project setup
-✓ Supabase project setup
-✓ Environment variables
-✓ Supabase browser client
-✓ Supabase server client
-✓ Database tables
-✓ RLS setup
-✓ Internship read policy
-✓ Basic homepage
-✓ Basic internship search filters
-
-WE ARE CURRENTLY AT:
-
-Improving/finalizing the search UI and then creating the TypeScript types and secure API architecture before connecting Firecrawl.
-
-Do not restart the project.
-
-Continue from this point.
-Read this project context. We are continuing InternScout AI. Follow the roadmap and tell me exactly what the next step is.

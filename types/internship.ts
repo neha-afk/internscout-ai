@@ -170,6 +170,21 @@ export interface SearchOpportunity {
   sourcePriority?: number;
 }
 
+export type ResumeRecommendation = "strong_apply" | "apply" | "stretch" | "not_recommended";
+
+export interface ResumeMatchResult {
+  matchScore: number;
+  matchingSkills: string[];
+  missingSkills: string[];
+  matchingKeywords: string[];
+  missingKeywords: string[];
+  relevantExperience: string[];
+  eligibilityConcerns: string[];
+  recommendation: ResumeRecommendation;
+  summary: string;
+  suggestions: string[];
+}
+
 export interface InternshipInsert {
   company: string | null;
   role: string | null;

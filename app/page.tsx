@@ -1015,6 +1015,11 @@ export default function Home() {
                                 ? "Save"
                                 : "Save unavailable"}
                         </button>
+                        {resolvedInternshipId && (
+                          <a href={`/resume?internshipId=${encodeURIComponent(resolvedInternshipId)}`} className="rounded-lg border border-purple-400/50 px-5 py-2.5 text-sm font-semibold text-purple-300 transition hover:bg-purple-400/10">
+                            Resume Match
+                          </a>
+                        )}
                         {applyUrl ? (
                           <a
                             href={applyUrl}

@@ -1,0 +1,17 @@
+"use client";
+import { useEffect, useState } from "react";
+import AuthNav from "@/components/AuthNav";
+import { createClient } from "@/lib/supabase/client";
+import type { ResumeMatchResult } from "@/types/internship";
+
+export default function ResumePage() {
+  const [internshipId, setInternshipId] = useState<string | null>(null);
+  const [resume, setResume] = useState<{ id: string; file_name: string } | null>(null);
+  const [result, setResult] = useState<ResumeMatchResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("Loading...");
+  useEffect(() => { setInternshipId(new URLSearchParams(window.location.search).get("internshipId")); void (async () => { const { data } = await createClient().auth.getUser(); if (!data.user) { setMessage("Please sign in to use Resume Match."); return; } setMessage(""); })(); }, []);
+  async function upload(event: React.ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; setBusy(true); const form = new FormData(); form.set("file", file); const response = await fetch("/api/resume/upload", { method: "POST", body: form }); const data = await response.json(); setBusy(false); if (!response.ok) { setMessage(data.error || "Unable to upload resume."); return; } setResume(data.resume); setMessage("Resume uploaded."); }
+  async function match() { if (!resume || !internshipId) return; setBusy(true); const response = await fetch("/api/resume/match", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ resumeId: resume.id, internshipId }) }); const data = await response.json(); setBusy(false); if (!response.ok) { setMessage(data.error || "Unable to analyze match."); return; } setResult(data); }
+  return <main className="min-h-screen bg-slate-950 text-white"><nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5"><a href="/" className="text-xl font-bold">InternScout AI</a><AuthNav /></nav><section className="mx-auto max-w-3xl px-6 py-12"><h1 className="text-3xl font-bold">AI Resume Match</h1><p className="mt-2 text-slate-400">Upload a PDF resume and compare it with a saved internship.</p><input className="mt-6 block w-full rounded-lg border border-slate-700 bg-slate-900 p-3" type="file" accept="application/pdf" onChange={upload} disabled={busy} />{resume && <div className="mt-4 rounded-lg bg-slate-900 p-4">{resume.file_name}<button type="button" onClick={() => void match()} disabled={busy || !internshipId} className="ml-4 rounded-lg bg-blue-500 px-4 py-2">{busy ? "Analyzing..." : "Check Match"}</button></div>}{message && <p className="mt-4 text-slate-300">{message}</p>}{result && <div className="mt-8 space-y-5 rounded-2xl border border-slate-800 bg-slate-900 p-6"><p className="text-3xl font-bold text-blue-300">Overall Match: {result.matchScore}%</p><p>{result.summary}</p><p><b>Matching skills:</b> {result.matchingSkills.join(", ") || "None detected"}</p><p><b>Missing skills:</b> {result.missingSkills.join(", ") || "None identified"}</p><p><b>Eligibility concerns:</b> {result.eligibilityConcerns.join(" ") || "None detected"}</p><p><b>Relevant experience:</b></p><ul className="list-disc pl-5 text-slate-300">{result.relevantExperience.map((item) => <li key={item}>{item}</li>)}</ul><p><b>Suggestions:</b></p><ul className="list-disc pl-5 text-slate-300">{result.suggestions.map((item) => <li key={item}>{item}</li>)}</ul></div>}</section></main>;
+}
