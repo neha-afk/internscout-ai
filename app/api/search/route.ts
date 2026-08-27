@@ -3,8 +3,10 @@ import { NextResponse } from "next/server";
 import {
   getCachedInternships,
   type CachedInternshipRow,
+  createPersistenceClient,
   upsertInternship,
 } from "@/lib/internships";
+import { createClient as createServerClient } from "@/lib/supabase/server";
 import type {
   ExperienceRange,
   InternshipInsert,
@@ -25,10 +27,19 @@ const firecrawl = new Firecrawl({
   apiKey: process.env.FIRECRAWL_API_KEY!,
 });
 
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const RATE_LIMIT_WINDOW_SECONDS = 60;
+const RATE_LIMIT_ROUTE = "/api/search";
+
 type SearchWebResult = {
   url: string;
   [key: string]: unknown;
 };
+
+function getRequestIp(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded || request.headers.get("x-real-ip")?.trim() || "unknown";
+}
 
 function hasUrl(value: unknown): value is SearchWebResult {
   return (
@@ -46,6 +57,20 @@ const blockedDomains = [
   "facebook.com",
   "x.com",
   "twitter.com",
+];
+
+// Aggregator/search domains are intentionally excluded from internship
+// candidates so they cannot consume scrape budget or persistence work.
+const aggregatorDomains = [
+  "glassdoor.com",
+  "glassdoor.co.in",
+  "linkedin.com",
+  "indeed.com",
+  "naukri.com",
+  "internshala.com",
+  "ziprecruiter.com",
+  "simplyhired.com",
+  "monster.com",
 ];
 
 const atsDomains = [
@@ -99,6 +124,116 @@ function sourcePriority(url: string): number {
   return 70;
 }
 
+function resultDomain(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function isAggregatorOrListingUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const domain = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    if (aggregatorDomains.some((candidate) => domainMatches(domain, candidate))) {
+      return true;
+    }
+    // Search/listing pages are not individual opportunities. Handle common
+    // path markers (including Glassdoor's SRCH_ URLs) and pagination/query
+    // markers without rejecting normal posting URLs.
+    if (pathname.includes("srch_") || /\/(?:search|search-results|listing|listings)(?:\/|$)/i.test(pathname)) {
+      return true;
+    }
+    if (/\/jobs?\/?$/i.test(pathname) && parsed.search) return true;
+    for (const key of parsed.searchParams.keys()) {
+      if (/^(?:q|query|keywords|page|pages|start|offset|from|to)$/i.test(key)) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+export function normalizeResultUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.protocol = "https:";
+    parsed.hash = "";
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (/^(utm_|ref|source|tracking|fbclid|gclid)/i.test(key)) parsed.searchParams.delete(key);
+    }
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return parsed.toString();
+  } catch {
+    return url.trim().replace(/\/+$/, "");
+  }
+}
+
+function normalizedOpportunityRole(result: SearchWebResult): string {
+  return `${String(result.company ?? "")} ${String(result.title ?? "")}`
+    .toLowerCase()
+    .replace(/\b(internship|intern)\b/g, "")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function applyDomainCap(results: SearchWebResult[]): SearchWebResult[] {
+  const cap = Math.min(3, Math.max(1, Math.floor(results.length * 0.4)));
+  const counts = new Map<string, number>();
+  const primary: SearchWebResult[] = [];
+  for (const result of results) {
+    const domain = resultDomain(result.url);
+    const count = counts.get(domain) ?? 0;
+    if (primary.length < 10 && count < cap) {
+      primary.push({ ...result, domainRankPenaltyApplied: count > 0 });
+      counts.set(domain, count + 1);
+    }
+  }
+  // Keep the cap strict for the surfaced set. If there are not enough
+  // alternate domains to fill ten slots, the overflow remains intentionally
+  // unsurfaced rather than allowing one ATS to consume the visible set.
+  return primary;
+}
+
+export function deprioritizePreviouslyShown<T>(results: T[]): T[] {
+  return [...results].sort((left, right) => {
+    const leftSeen = Boolean((left as { is_previously_seen?: boolean }).is_previously_seen);
+    const rightSeen = Boolean((right as { is_previously_seen?: boolean }).is_previously_seen);
+    return Number(leftSeen) - Number(rightSeen);
+  });
+}
+
+export function freshnessRank(value: unknown): number {
+  return value === "dated" ? 1 : 0;
+}
+
+function diversifyResults(results: SearchWebResult[]): SearchWebResult[] {
+  const groups = new Map<string, SearchWebResult[]>();
+  const seenRoles = new Set<string>();
+  for (const result of results) {
+    const domain = resultDomain(result.url);
+    const group = groups.get(domain) ?? [];
+    group.push(result);
+    groups.set(domain, group);
+  }
+  const diversified: SearchWebResult[] = [];
+  while (diversified.length < results.length) {
+    let added = false;
+    for (const group of groups.values()) {
+      const next = group.shift();
+      if (next) {
+        diversified.push(next);
+        added = true;
+      }
+    }
+    if (!added) break;
+  }
+  return diversified;
+}
+
 function filterSearchResults(results: SearchWebResult[]): {
   internshipResults: SearchWebResult[];
   communityResults: SearchWebResult[];
@@ -111,6 +246,7 @@ function filterSearchResults(results: SearchWebResult[]): {
     /\b(discussion|forum|community|q\s*&\s*a|interview questions|career advice|salary guide|how to)\b/i;
   const internshipResults: SearchWebResult[] = [];
   const communityResults: SearchWebResult[] = [];
+  const seenRoles = new Set<string>();
 
   for (const result of results) {
     let domain = "";
@@ -121,6 +257,10 @@ function filterSearchResults(results: SearchWebResult[]): {
       domain = parsedUrl.hostname.toLowerCase();
       pathname = parsedUrl.pathname.toLowerCase();
     } catch {
+      continue;
+    }
+
+    if (isAggregatorOrListingUrl(result.url)) {
       continue;
     }
 
@@ -150,14 +290,55 @@ function filterSearchResults(results: SearchWebResult[]): {
       continue;
     }
 
-    internshipResults.push({ ...result, sourcePriority: priority });
+    const roleKey = normalizedOpportunityRole(result);
+    if (roleKey && seenRoles.has(roleKey)) continue;
+    if (roleKey) seenRoles.add(roleKey);
+    internshipResults.push({
+      ...result,
+      sourcePriority: priority,
+      source_domain: domain,
+      freshness: "unknown",
+      is_previously_seen: false,
+      domainRankPenaltyApplied: false,
+    });
   }
 
   internshipResults.sort(
     (left, right) => Number(right.sourcePriority) - Number(left.sourcePriority)
   );
 
-  return { internshipResults, communityResults };
+  return {
+    internshipResults: applyDomainCap(diversifyResults(internshipResults)),
+    communityResults,
+  };
+}
+
+async function annotatePreviouslyShown(results: SearchWebResult[]): Promise<SearchWebResult[]> {
+  try {
+    const authClient = await createServerClient();
+    const { data: authData } = await authClient.auth.getUser();
+    if (!authData.user || results.length === 0) return results;
+    const urls = results.map((result) => normalizeResultUrl(result.url));
+    const client = createPersistenceClient();
+    const { data } = await client.from("shown_internships").select("normalized_url").eq("user_id", authData.user.id).in("normalized_url", urls);
+    const seen = new Set((data ?? []).map((row) => row.normalized_url));
+    return results.map((result) => ({ ...result, is_previously_seen: seen.has(normalizeResultUrl(result.url)) }));
+  } catch {
+    return results;
+  }
+}
+
+async function recordShownInternships(results: SearchWebResult[]): Promise<void> {
+  try {
+    const authClient = await createServerClient();
+    const { data: authData } = await authClient.auth.getUser();
+    if (!authData.user || results.length === 0) return;
+    const now = new Date().toISOString();
+    const rows = [...new Set(results.map((result) => normalizeResultUrl(result.url)))].map((normalized_url) => ({ user_id: authData.user.id, normalized_url, last_shown_at: now }));
+    await createPersistenceClient().from("shown_internships").upsert(rows, { onConflict: "user_id,normalized_url" });
+  } catch {
+    // Tracking must never fail the search response.
+  }
 }
 
 const SCRAPE_BUDGET = 3;
@@ -224,27 +405,27 @@ function selectScrapeCandidates(
 ): SearchWebResult[] {
   const selectedCandidates: SearchWebResult[] = [];
   const seenTitles = new Set<string>();
+  const selectedDomains = new Set<string>();
 
   const sortedResults = [...internshipResults].sort(
     (left, right) => candidateRankingScore(right) - candidateRankingScore(left)
   );
 
-  for (const result of sortedResults) {
-    if (selectedCandidates.length >= SCRAPE_BUDGET) {
-      break;
-    }
+  const addCandidate = (result: SearchWebResult, enforceDomainDiversity: boolean): void => {
+    if (selectedCandidates.length >= SCRAPE_BUDGET) return;
 
     const normalizedTitle = normalizeTitle(result.title);
     const text = `${String(result.title ?? "")} ${String(
       result.description ?? ""
     )}`;
 
-    if (hasStrongEducationRequirement(text)) {
-      continue;
-    }
+    if (hasStrongEducationRequirement(text)) return;
+
+    const domain = resultDomain(result.url);
+    if (enforceDomainDiversity && selectedDomains.has(domain)) return;
 
     if (normalizedTitle && seenTitles.has(normalizedTitle)) {
-      continue;
+      return;
     }
 
     if (normalizedTitle) {
@@ -262,6 +443,15 @@ function selectScrapeCandidates(
         typeof result.position === "number" ? result.position : undefined,
       sourcePriority: Number(result.sourcePriority),
     });
+    selectedDomains.add(domain);
+  };
+
+  for (const result of sortedResults) addCandidate(result, true);
+  if (selectedCandidates.length < SCRAPE_BUDGET) {
+    for (const result of sortedResults) {
+      if (selectedCandidates.length >= SCRAPE_BUDGET) break;
+      addCandidate(result, false);
+    }
   }
 
   return selectedCandidates;
@@ -366,7 +556,7 @@ function extractApplicationUrl(content: string, sourceUrl: string): string {
   );
 }
 
-function extractCompanyAndRole(
+export function extractCompanyAndRole(
   title: string,
   sourceUrl: string
 ): { company: string | null; role: string | null } {
@@ -380,14 +570,37 @@ function extractCompanyAndRole(
 
   try {
     const parsedUrl = new URL(sourceUrl);
-    const leverMatch = parsedUrl.pathname.match(/^\/([^/]+)\//);
+    const hostname = parsedUrl.hostname.toLowerCase();
+    const pathSegments = parsedUrl.pathname.split("/").filter(Boolean);
     const companySlug =
-      parsedUrl.hostname.toLowerCase() === "jobs.lever.co"
-        ? leverMatch?.[1]
-        : undefined;
+      hostname === "jobs.lever.co"
+        ? pathSegments[0]
+        : hostname === "boards.greenhouse.io" || hostname.endsWith(".greenhouse.io")
+          ? pathSegments[0]
+          : hostname === "jobs.ashbyhq.com"
+            ? pathSegments[0]
+            : undefined;
+    const atsCompany = companySlug;
+    if (!atsCompany) {
+      const rootDomain = hostname.replace(/^www\./, "").split(".")[0];
+      const knownCompanyNames: Record<string, string> = {
+        jpmorganchase: "JPMorgan Chase",
+      };
+      const companyName = knownCompanyNames[rootDomain] ?? rootDomain
+        .replace(/[-_]+/g, " ")
+        .replace(/\b(inc|llc|ltd|corp|corporation|company|co)\b$/i, "")
+        .trim()
+        .replace(/\b\w/g, (character) => character.toUpperCase());
+      const isKnownAts = atsDomains.some((candidate) => domainMatches(hostname, candidate));
+      const isAggregator = aggregatorDomains.some((candidate) => domainMatches(hostname, candidate));
+      return {
+        company: !isKnownAts && !isAggregator && companyName ? companyName : null,
+        role: title.trim() || null,
+      };
+    }
     return {
-      company: companySlug
-        ? companySlug
+      company: atsCompany
+        ? atsCompany
             .split(/[-_]/g)
             .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
             .join(" ")
@@ -1201,8 +1414,16 @@ async function persistVerificationResults(
   const persistedIds = new Map<string, string>();
   const settled = await Promise.allSettled(
     verificationResults.map(async ({ internship, verification }) => {
+      const company = internship.company?.trim() || null;
+      if (!company) {
+        console.warn("Skipping internship persistence: missing required field.", {
+          sourceUrl: internship.sourceUrl,
+          missingField: "company",
+        });
+        return { sourceUrl: internship.sourceUrl, id: null };
+      }
       const databaseRecord: InternshipInsert = {
-        company: internship.company,
+        company,
         role: internship.role,
         description: internship.description,
         location: internship.location,
@@ -1372,13 +1593,47 @@ function generateSearchQueries(filters: SearchFilters): string[] {
       ? `${role} internship ${selectedSkills}`
       : `${role} internship student`,
     `${role} internship ${graduationYear} student${experience === "0" ? " fresher" : ""}`,
-    `site:jobs.lever.co "${role}" intern`,
+    `(site:boards.greenhouse.io OR site:ashbyhq.com OR site:jobs.lever.co) "${role}" intern`,
   ];
 
   return [...new Set(queries)].slice(0, 5);
 }
 
 export async function POST(request: Request) {
+  let identifier = getRequestIp(request);
+  try {
+    const authClient = await createServerClient();
+    const { data: authData } = await authClient.auth.getUser();
+    if (authData.user?.id) identifier = authData.user.id;
+  } catch (error) {
+    console.error("Search rate-limit auth lookup failed:", error);
+  }
+
+  try {
+    const { data: allowed, error } = await createPersistenceClient().rpc(
+      "check_rate_limit",
+      {
+        p_identifier: identifier,
+        p_route: RATE_LIMIT_ROUTE,
+        p_max_requests: RATE_LIMIT_MAX_REQUESTS,
+        p_window_seconds: RATE_LIMIT_WINDOW_SECONDS,
+      }
+    );
+    if (error) throw error;
+    if (allowed === false) {
+      return NextResponse.json(
+        { error: "Too many search requests. Please try again shortly." },
+        {
+          status: 429,
+          headers: { "Retry-After": String(RATE_LIMIT_WINDOW_SECONDS) },
+        }
+      );
+    }
+  } catch (error) {
+    // Fail open so a limiter outage does not block legitimate searches.
+    console.error("Search rate-limit check failed; allowing request:", error);
+  }
+
   try {
     const body: SearchFilters = await request.json();
 
@@ -1552,16 +1807,20 @@ export async function POST(request: Request) {
     const uniqueResults = new Map<string, SearchWebResult>();
     for (const results of searchResults) {
       for (const result of results) {
-        if (hasUrl(result) && !uniqueResults.has(result.url)) {
-          uniqueResults.set(result.url, result);
+        if (hasUrl(result)) {
+          const normalizedUrl = normalizeResultUrl(result.url);
+          if (!uniqueResults.has(normalizedUrl)) {
+            uniqueResults.set(normalizedUrl, { ...result, url: normalizedUrl });
+          }
         }
       }
     }
 
-    const rawResults = [...uniqueResults.values()];
+    const rawResults = await annotatePreviouslyShown([...uniqueResults.values()]);
     const { internshipResults, communityResults } =
       filterSearchResults(rawResults);
-    const scrapeCandidates = selectScrapeCandidates(internshipResults);
+    const rankedInternshipResults = deprioritizePreviouslyShown(internshipResults);
+    const scrapeCandidates = selectScrapeCandidates(rankedInternshipResults);
     const { scrapedCandidates, scrapeFailureCount } =
       await scrapeSelectedCandidates(scrapeCandidates);
     const structuredInternships = scrapedCandidates.map(
@@ -1614,14 +1873,15 @@ export async function POST(request: Request) {
         : [],
       freshResultsWithIds
       );
+    await recordShownInternships(rankedInternshipResults);
     return NextResponse.json(
       {
         message: "Internship search completed successfully.",
         queries,
         rawFound: rawResults.length,
-        results: internshipResults,
+        results: rankedInternshipResults,
         communityResults,
-        totalFound: internshipResults.length,
+        totalFound: rankedInternshipResults.length,
         scrapeCandidates,
         scrapeCandidateCount: scrapeCandidates.length,
         scrapedCandidates,
