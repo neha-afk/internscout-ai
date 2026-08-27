@@ -20,6 +20,10 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  function postAuthDestination(): string {
+    const next = new URLSearchParams(window.location.search).get("next");
+    return next?.startsWith("/") ? next : "/dashboard";
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,7 +37,7 @@ export default function LoginPage() {
       const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       setBusy(false);
       if (signInError) return setError(friendlyAuthError(signInError.message));
-      router.push("/");
+      router.push(postAuthDestination());
       router.refresh();
       return;
     }
@@ -45,7 +49,7 @@ export default function LoginPage() {
     setBusy(false);
     if (signUpError) return setError(friendlyAuthError(signUpError.message));
     if (data.session) {
-      router.push("/");
+      router.push(postAuthDestination());
       router.refresh();
     } else {
       setMessage("Account created. Check your email to confirm your account before signing in.");
